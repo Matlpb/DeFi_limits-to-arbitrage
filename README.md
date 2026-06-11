@@ -23,17 +23,21 @@ prints a short progress summary.
 
 ## Setup
 
+> Requires **Python 3.13**. Check with `python3.13 --version`. If it's missing:
+> macOS `brew install python@3.13` · Ubuntu `sudo apt install python3.13 python3.13-venv` · Windows: install from [python.org](https://www.python.org/downloads/).
+
 ```bash
 # 1. Clone the repo
 git clone https://github.com/Matlpb/DeFi_limits-to-arbitrage.git
 cd DeFi_limits-to-arbitrage
 
-# 2. Create and activate a virtual environment
-python3 -m venv .venv
+# 2. Create a Python 3.13 virtual environment and activate it
+python3.13 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
-# 3. Install dependencies
-pip install -r requirements.txt
+# 3. Install dependencies (pinned to versions compatible with Python 3.13)
+python -m pip install --upgrade pip
+pip install -r requirements.txt jupyter ipykernel
 
 # 4. Create your .env file and add your Dune API key
 cp .env.example .env             # then open .env and fill in your key
