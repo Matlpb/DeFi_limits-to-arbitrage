@@ -1,0 +1,11 @@
+# secrets
+.env
+
+# data (large CSVs, not needed in the repo)
+ethereum/
+base/
+
+# python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
