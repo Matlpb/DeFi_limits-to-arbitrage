@@ -40,17 +40,14 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt jupyter ipykernel
 
 # 4. Create your .env file and add your Dune API key
-cp .env.example .env             # then open .env and fill in your key
-
-# 5. Register the venv as a Jupyter kernel
-python -m ipykernel install --user --name=defi_arbitrage
-
-# 6. Launch Jupyter
-jupyter notebook
+touch .env
+nano .env
+DUNE_API_KEY=your_actual_key_here
+#close
 ```
 
 > Each new terminal session, reactivate the venv with `source .venv/bin/activate`.
-> In the notebook, select kernel → **defi_arbitrage**.
+
 
 ## Workflow
 
