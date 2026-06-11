@@ -26,7 +26,7 @@ prints a short progress summary.
 ```bash
 # 1. Clone the repo
 git clone https://github.com/Matlpb/DeFi_limits-to-arbitrage.git
-cd YOUR_REPO
+cd DeFi_limits-to-arbitrage
 
 # 2. Create and activate a virtual environment
 python3 -m venv .venv
