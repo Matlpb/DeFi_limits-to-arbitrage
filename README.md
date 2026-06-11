@@ -21,12 +21,38 @@ arblib/                   # reusable library (all logic lives here)
 The notebooks only set **parameters** and call `arblib` functions; every step
 prints a short progress summary.
 
+## Setup
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/Matlpb/DeFi_limits-to-arbitrage.git
+cd YOUR_REPO
+
+# 2. Create and activate a virtual environment
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Create your .env file and add your Dune API key
+cp .env.example .env             # then open .env and fill in your key
+
+# 5. Register the venv as a Jupyter kernel
+python -m ipykernel install --user --name=defi_arbitrage
+
+# 6. Launch Jupyter
+jupyter notebook
+```
+
+> Each new terminal session, reactivate the venv with `source .venv/bin/activate`.
+> In the notebook, select kernel → **defi_arbitrage**.
+
 ## Workflow
 
-1. `pip install -r requirements.txt`
-2. Run **`extract_arbitrage.ipynb`** — set `CHAIN`, tokens and the collection
+1. Open **`extract_arbitrage.ipynb`** — set `CHAIN`, tokens and the collection
    window, then run all cells to save `<chain>/df_*.csv`.
-3. Run **`arbitrage.ipynb`** — set `CHAIN`, `STUDY_START_TIME` and
+2. Open **`arbitrage.ipynb`** — set `CHAIN`, `STUDY_START_TIME` and
    `MAX_GAP_BLOCKS`, then run all cells.
 
 ## The two time anchors
