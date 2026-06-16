@@ -9,10 +9,16 @@ tokens / time window to study, but they pull the constants from here.
 # ---------------------------------------------------------------------------
 # Dune saved-query ids (one query per DEX, parameterised by chain + tokens)
 # ---------------------------------------------------------------------------
-QUERY_IDS = {
-    "uniswap": 7423632,    # Uniswap   (base, ethereum, arbitrum)
-    "pancake": 7429756,    # PancakeSwap (base, ethereum, arbitrum)
-    "aerodrome": 7430568,  # Aerodrome  (base only)
+# Swap-level mid prices.
+SWAP_QUERY_IDS = {
+    "uniswap": 7727307,    # 7423632 Uniswap   (base, ethereum, arbitrum)
+    "pancake": 7727319,    # 7429756 PancakeSwap (base, ethereum, arbitrum)
+}
+
+# Liquidity state (mint / burn events) used to reconstruct liquidity per block.
+LIQUIDITY_QUERY_IDS = {
+    "uniswap": 7727404,
+    "pancake": 7727327,
 }
 
 # ---------------------------------------------------------------------------
@@ -29,11 +35,16 @@ TOKENS = {
     },
 }
 
-# Default file name per DEX used when saving / loading the raw extracts.
-DEX_FILES = {
-    "df_uniswap": "df_uniswap.csv",
-    "df_pancake": "df_pancake.csv",
-    "df_aerodrome": "df_aerodrome.csv",
+# File name per DEX within each chain sub-folder. Keys keep the ``df_<dex>``
+# form so the pool-splitting step names pools ``uniswap_1``, ``pancake_1`` ...
+SWAP_FILES = {
+    "df_uniswap": "df_uniswap_swap.csv",
+    "df_pancake": "df_pancake_swap.csv",
+}
+
+LIQUIDITY_FILES = {
+    "df_uniswap": "df_uniswap_liq.csv",
+    "df_pancake": "df_pancake_liq.csv",
 }
 
 

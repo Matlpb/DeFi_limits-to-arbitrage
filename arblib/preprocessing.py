@@ -136,6 +136,20 @@ def filter_pools_by_swap_gap(pool_dfs, max_gap_blocks):
     return kept, dropped
 
 
+def _complete_block_times(grid):
+    """Fill ``evt_block_time`` for blocks no pool traded in.
+
+    The grid is a complete, consecutive block range, so a missing block's time
+    is linearly interpolated from its neighbours (block times are monotonic in
+    block number). The original ``"YYYY-MM-DD HH:MM:SS.fff UTC"`` string format
+    is preserved so downstream comparisons keep working.
+    """
+    naive = grid["evt_block_time"].str.replace(" UTC", "", regex=False)
+    ts = pd.to_datetime(naive).interpolate(method="linear")
+    grid["evt_block_time"] = ts.dt.strftime("%Y-%m-%d %H:%M:%S.%f").str[:-3] + " UTC"
+    return grid
+
+
 def reconstruct_pool_timeseries(pool_dfs):
     """Build a dense, block-by-block, forward-filled price series per pool.
 
@@ -160,11 +174,14 @@ def reconstruct_pool_timeseries(pool_dfs):
         for block_num, block_time in zip(df["evt_block_number"], df["evt_block_time"]):
             block_time_map.setdefault(int(block_num), block_time)
 
-    # Complete block grid with canonical times.
+    # Complete block grid with canonical times. Blocks that no pool traded in
+    # have no recorded time; interpolate one so every consecutive block keeps a
+    # timestamp and none get dropped downstream (see _complete_block_times).
     grid = pd.DataFrame(
         {"evt_block_number": range(global_min_block, global_max_block + 1)}
     )
     grid["evt_block_time"] = grid["evt_block_number"].map(block_time_map)
+    grid = _complete_block_times(grid)
 
     reconstructed = {}
     for pool_name, df in pool_dfs.items():
@@ -197,6 +214,135 @@ def reconstruct_pool_timeseries(pool_dfs):
 
     print(f"\nCreated {len(reconstructed)} reconstructed time series")
     return reconstructed, global_min_block, global_max_block, block_time_map
+
+
+def _liquidity_events_by_pool(liq_dfs):
+    """Combine the per-DEX liquidity extracts into ``{pool_address -> events}``.
+
+    ``liquidity_delta`` is parsed as a Python ``int`` (the raw values overflow
+    int64, so pandas loads them as strings). Events are sorted by
+    ``(evt_block_number, evt_index)`` so they can be applied in execution order.
+    """
+    frames = [df for df in liq_dfs.values() if df is not None and not df.empty]
+    if not frames:
+        return {}
+
+    events = pd.concat(frames, ignore_index=True)
+    events["liquidity_delta"] = events["liquidity_delta"].apply(int)
+
+    by_pool = {}
+    for addr, group in events.groupby("pool"):
+        by_pool[addr] = group.sort_values(
+            ["evt_block_number", "evt_index"]
+        ).reset_index(drop=True)
+    return by_pool
+
+
+def _apply_liquidity_events(grid, events):
+    """Turn a reconstructed pool grid's ``liquidity`` column into the running
+    active-liquidity state ``L`` per block.
+
+    ``L`` is anchored to each swap's authoritative ``liquidity`` field, then
+    updated by in-range mint/burn deltas (``tick_lower <= current_tick <
+    tick_upper``) between swaps, and carried forward across quiet blocks.
+
+    Returns ``(grid, n_applied)`` where ``n_applied`` is how many deltas landed
+    in range.
+    """
+    grid = grid.sort_values("evt_block_number").reset_index(drop=True).copy()
+
+    has_events = events is not None and not events.empty
+    events_by_block = (
+        {b: g for b, g in events.groupby("evt_block_number")} if has_events else {}
+    )
+
+    # Current price tick, known between swaps via forward-fill, drives the
+    # in-range indicator.
+    tick_ffill = grid["tick"].ffill()
+
+    blocks = grid["evt_block_number"].to_numpy()
+    anchors = grid["liquidity"].to_numpy(dtype=object)
+
+    L = None  # running state (exact int); None until the first swap anchor
+    n_applied = 0
+    out = []
+
+    for i in range(len(grid)):
+        anchor = anchors[i]
+        has_swap = not pd.isna(anchor)
+        if has_swap:
+            L = int(anchor)  # swap liquidity is the per-block ground truth
+
+        block = int(blocks[i])
+        if has_events and L is not None and block in events_by_block:
+            ic = tick_ffill.iloc[i]
+            if not pd.isna(ic):
+                ic = int(ic)
+                for e in events_by_block[block].itertuples(index=False):
+                    # Add every in-range mint/burn delta on top of the swap
+                    # liquidity (or the carried value), whenever the current tick
+                    # is inside the event's [tick_lower, tick_upper) range.
+                    if e.tick_lower <= ic < e.tick_upper:
+                        L += int(e.liquidity_delta)
+                        n_applied += 1
+
+        # Unchanged L => liquidity is held constant across the hole.
+        out.append(L)
+
+    # Keep exact integers: the raw values overflow int64/float64, and assigning a
+    # list mixing ints with None would coerce the column to lossy float64. None
+    # remains only for the leading warm-up blocks before the first swap.
+    grid["liquidity"] = pd.Series(out, index=grid.index, dtype=object)
+    return grid, n_applied
+
+
+def reconstruct_liquidity_states(reconstructed_pools, liq_dfs):
+    """Reconstruct active liquidity ``L`` per block for every reconstructed pool.
+
+    For each pool already in ``reconstructed_pools``, the ``liquidity`` column is
+    rebuilt as the running liquidity state: swaps act as authoritative anchors,
+    in-range mint/burn deltas (from ``liq_dfs``) are applied between swaps using
+    the current price tick, and the state is held constant across blocks with no
+    update. Pools that appear only in the liquidity extracts are ignored.
+
+    Parameters
+    ----------
+    reconstructed_pools : dict[str, pd.DataFrame]
+        Output of :func:`reconstruct_pool_timeseries` (one dense grid per pool).
+    liq_dfs : dict[str, pd.DataFrame]
+        Per-DEX mint/burn extracts, e.g. loaded from ``<chain>/liquidity/``.
+
+    Returns
+    -------
+    dict[str, pd.DataFrame]
+        Same keys as ``reconstructed_pools`` with the ``liquidity`` column
+        replaced by the reconstructed state.
+    """
+    events_by_pool = _liquidity_events_by_pool(liq_dfs)
+
+    result = {}
+    n_with_events = 0
+    for pool_name, grid in reconstructed_pools.items():
+        addr_series = grid["pool"].dropna()
+        addr = addr_series.iloc[0] if not addr_series.empty else None
+        events = events_by_pool.get(addr)
+
+        result[pool_name], n_applied = _apply_liquidity_events(grid, events)
+
+        if events is not None and not events.empty:
+            n_with_events += 1
+            print(
+                f"{pool_name} ({addr[:10]}...): {len(events)} mint/burn events, "
+                f"{n_applied} applied in range"
+            )
+        else:
+            print(f"{pool_name}: no mint/burn events, liquidity forward-filled")
+
+    print(
+        f"\nReconstructed liquidity for {len(result)} pools "
+        f"({n_with_events} had mint/burn events)"
+    )
+    return result
 
 
 def filter_by_start_time(reconstructed_pools, study_start_time):
