@@ -21,6 +21,17 @@ LIQUIDITY_QUERY_IDS = {
     "pancake": 7727327,
 }
 
+# Gas queries.
+#   ``chain_gas_price``  - per-block base fee + utilization for the whole chain,
+#                          parameterised by chain + time window only (not per-DEX).
+#   ``*_gas_per_swap``   - realised gas used per swap on each DEX, parameterised
+#                          like the swap queries (chain + token pair + window).
+GAS_QUERY_IDS = {
+    "chain_gas_price":      7748900,
+    "pancake_gas_per_swap": 7749289,
+    "uniswap_gas_per_swap": 7749258,
+}
+
 # ---------------------------------------------------------------------------
 # Token registry (addresses are lower-cased to match the Dune output)
 # ---------------------------------------------------------------------------
@@ -47,6 +58,12 @@ LIQUIDITY_FILES = {
     "df_pancake": "df_pancake_liq.csv",
 }
 
+# Gas files live under ``<chain>/gas/``. Keys match :data:`GAS_QUERY_IDS`.
+GAS_FILES = {
+    "chain_gas_price":      "chain_gas_price.csv",
+    "pancake_gas_per_swap": "pancake_gas_per_swap.csv",
+    "uniswap_gas_per_swap": "uniswap_gas_per_swap.csv",
+}
 
 def build_collection_params(chain, token0, token1, start_ts, end_ts):
     """Assemble the parameter dict expected by the Dune saved queries.

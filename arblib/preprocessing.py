@@ -31,13 +31,22 @@ def keep_latest_swap_per_block(df, label=""):
     """Keep, per (pool, block), the swap with the highest ``evt_index``.
 
     The highest ``evt_index`` is the last swap in the block, so its
-    ``mid_price`` is the price at the end of that block.
+    ``mid_price`` is the price at the end of that block. Before collapsing the
+    partition, ``gas_price`` is overwritten with the *maximum* gas price across
+    all swaps in that block (every pool), so the kept row carries the block's
+    worst-case gas cost rather than just the last swap's.
     """
     if df is None or df.empty:
         print(f"[INFO] {label}: empty dataframe")
         return pd.DataFrame()
 
     df = df.copy()
+
+    # Max gas over the whole block (across all pools), assigned to every row so
+    # the one we keep per (pool, block) ends up with the block-wide max.
+    if "gas_price" in df.columns:
+        df["gas_price"] = df.groupby("evt_block_number")["gas_price"].transform("max")
+
     df = df.loc[df.groupby(["pool", "evt_block_number"])["evt_index"].idxmax()]
     return df.reset_index(drop=True)
 
