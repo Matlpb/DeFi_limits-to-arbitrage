@@ -1,10 +1,12 @@
 """
 Cross-DEX price comparison.
 
-Given the aligned per-pool price series, compute the absolute price difference
-for every pair of pools that live on *different* DEXes (intra-DEX pairs are
-skipped: arbitrage is about price gaps across venues).
+Given the aligned per-pool price series, compute the absolute mid-price difference
+for every pair of pools that live on different DEXes (intra-DEX pairs are skipped:
+arbitrage is about price gaps across venues).
 """
+
+from __future__ import annotations
 
 from itertools import combinations
 
@@ -13,12 +15,12 @@ import pandas as pd
 from . import formulas
 
 
-def add_mid_price(pools):
+def add_mid_price(pools: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     """Add a ``mid_price`` column to every processed pool frame (in place).
 
-    The mid price (token0 per token1, e.g. USDC per WETH) is computed from
-    ``sqrtPriceX96`` via :func:`arblib.formulas.mid_price`, since the processed
-    CSVs store ``sqrtPriceX96`` but not the price. Returns ``pools``.
+    The mid price (token0 per token1) is computed from ``sqrtPriceX96`` via
+    :func:`arblib.formulas.mid_price`, since the processed CSVs store ``sqrtPriceX96``
+    but not the price. Returns ``pools``.
     """
     for df in pools.values():
         df["mid_price"] = formulas.mid_price(
@@ -27,24 +29,23 @@ def add_mid_price(pools):
     return pools
 
 
-def _group_pools_by_dex(filtered_pools):
+def _group_pools_by_dex(filtered_pools: dict[str, pd.DataFrame]) -> dict[str, dict[str, pd.DataFrame]]:
     """Group ``{pool_name: df}`` by DEX -> ``{dex: {pool_name: df}}``."""
-    dex_pools = {}
+    dex_pools: dict[str, dict[str, pd.DataFrame]] = {}
     for pool_name, df in filtered_pools.items():
         dex_name = pool_name.split("_")[0]
         dex_pools.setdefault(dex_name, {})[pool_name] = df
     return dex_pools
 
 
-def compute_pairwise_differences(filtered_pools):
-    """Absolute price difference for every cross-DEX pool pair.
+def compute_pairwise_differences(
+    filtered_pools: dict[str, pd.DataFrame],
+) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
+    """Absolute mid-price difference for every cross-DEX pool pair.
 
-    Returns
-    -------
-    (price_differences, all_diffs_df)
-        ``price_differences`` maps ``"<poolA>_vs_<poolB>"`` to a DataFrame with
-        both prices and ``abs_diff``. ``all_diffs_df`` is a wide summary holding
-        ``abs_diff`` for every pair, indexed by block.
+    Returns ``(price_differences, all_diffs_df)``: ``price_differences`` maps
+    ``"<poolA>_vs_<poolB>"`` to a frame with both prices and ``abs_diff``;
+    ``all_diffs_df`` is a wide summary holding ``abs_diff`` for every pair by block.
     """
     dex_pools = _group_pools_by_dex(filtered_pools)
     print(f"DEXes found: {list(dex_pools.keys())}")
@@ -62,9 +63,7 @@ def compute_pairwise_differences(filtered_pools):
                 )
 
                 merged = left.merge(right, on="evt_block_number", how="inner")
-                merged["abs_diff"] = (
-                    merged[f"{pool1}_price"] - merged[f"{pool2}_price"]
-                ).abs()
+                merged["abs_diff"] = (merged[f"{pool1}_price"] - merged[f"{pool2}_price"]).abs()
 
                 price_differences[f"{pool1}_vs_{pool2}"] = merged
 
@@ -77,7 +76,6 @@ def compute_pairwise_differences(filtered_pools):
         print(f"  Mean diff: {df['abs_diff'].mean():.6f}")
         print(f"  Min diff: {df['abs_diff'].min():.6f}\n")
 
-    # Wide summary: one abs_diff column per pair.
     first = next(iter(price_differences.values()))
     all_diffs_df = first[["evt_block_number", "evt_block_time"]].copy()
     for pair_name in sorted(price_differences):

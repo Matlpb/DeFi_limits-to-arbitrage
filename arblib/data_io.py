@@ -1,9 +1,12 @@
 """
-Disk I/O for the raw DEX extracts.
+Disk I/O for the raw extracts, processed pools, and reference quantiles.
 
-Each chain gets its own sub-folder (e.g. ``base/``, ``ethereum/``) holding one
-CSV per DEX. These helpers keep the save / load logic out of the notebooks.
+Paths come from ``arblib.config.Settings`` (e.g. ``S.swaps_dir``, ``S.processed_dir``),
+so these helpers stay parameter-agnostic and keep the load / save logic out of the
+notebooks.
 """
+
+from __future__ import annotations
 
 import os
 from pathlib import Path
@@ -13,16 +16,8 @@ import pandas as pd
 from .config import SWAP_FILES
 
 
-def save_dataframes(dfs, save_dir):
-    """Write each non-empty DataFrame to ``save_dir`` as CSV.
-
-    Parameters
-    ----------
-    dfs : dict[str, pd.DataFrame]
-        Mapping of file name (e.g. ``"df_uniswap.csv"``) to DataFrame.
-    save_dir : str
-        Destination directory (created if missing).
-    """
+def save_dataframes(dfs: dict[str, pd.DataFrame], save_dir: str | Path) -> None:
+    """Write each non-empty DataFrame in ``{filename: df}`` to ``save_dir`` as CSV."""
     os.makedirs(save_dir, exist_ok=True)
 
     for filename, df in dfs.items():
@@ -36,20 +31,8 @@ def save_dataframes(dfs, save_dir):
     print("Done.")
 
 
-def save_processed_pools(pool_dfs, save_dir):
-    """Write each processed per-pool series to ``save_dir`` as CSV.
-
-    One file per pool, named after its key (e.g. ``"uniswap_1.csv"``,
-    ``"pancake_2.csv"``).
-
-    Parameters
-    ----------
-    pool_dfs : dict[str, pd.DataFrame]
-        Mapping of pool key (e.g. ``"uniswap_1"``) to its reconstructed,
-        study-window DataFrame.
-    save_dir : str
-        Destination directory (created if missing), e.g. ``".../ethereum/processed"``.
-    """
+def save_processed_pools(pool_dfs: dict[str, pd.DataFrame], save_dir: str | Path) -> None:
+    """Write each processed per-pool series to ``save_dir`` as ``<pool_name>.csv``."""
     os.makedirs(save_dir, exist_ok=True)
 
     for name, df in pool_dfs.items():
@@ -63,21 +46,13 @@ def save_processed_pools(pool_dfs, save_dir):
     print("Done.")
 
 
-def load_pool_csvs(data_dir, files=None):
-    """Load the per-DEX CSVs found in ``data_dir``.
+def load_pool_csvs(data_dir: str | Path, files: dict[str, str] | None = None) -> dict[str, pd.DataFrame]:
+    """Load the per-DEX CSVs found in ``data_dir`` into ``{key: df}``.
 
-    Parameters
-    ----------
-    data_dir : str
-        Directory containing the CSVs (e.g. ``".../base"``).
-    files : dict[str, str], optional
-        Mapping of DataFrame key -> file name. Defaults to
-        :data:`arblib.config.SWAP_FILES`.
-
-    Returns
-    -------
-    dict[str, pd.DataFrame]
-        Only the files that actually exist on disk.
+    ``files`` maps DataFrame key -> file name (defaults to :data:`arblib.config.SWAP_FILES`);
+    only files present on disk are returned. Dune sometimes exports space-padded headers
+    and string cells, so ``skipinitialspace`` and header/cell stripping keep merges on
+    keys like ``pool`` / ``evt_tx_hash`` matching.
     """
     files = files or SWAP_FILES
     dfs = {}
@@ -85,10 +60,6 @@ def load_pool_csvs(data_dir, files=None):
     for name, filename in files.items():
         path = os.path.join(data_dir, filename)
         if os.path.exists(path):
-            # Be robust to CSVs exported pretty-printed (spaces after commas and
-            # values padded to fixed width). ``skipinitialspace`` drops leading
-            # spaces; stripping headers and string cells drops the trailing
-            # padding that would otherwise break e.g. pool-address matching.
             df = pd.read_csv(path, skipinitialspace=True)
             df.columns = df.columns.str.strip()
             for col in df.select_dtypes(include="object").columns:
@@ -102,12 +73,11 @@ def load_pool_csvs(data_dir, files=None):
     return dfs
 
 
-def load_processed_pools(processed_dir):
+def load_processed_pools(processed_dir: str | Path) -> dict[str, pd.DataFrame]:
     """Load every processed per-pool CSV into ``{pool_name: df}``.
 
-    Reads only ``uniswap_*`` / ``pancake_*`` files (uniswap first, so cross-DEX
-    pairwise labels stay stable) from ``processed_dir`` - the output of
-    :func:`save_processed_pools`.
+    Reads only ``uniswap_*`` / ``pancake_*`` files (uniswap first, so cross-DEX pairwise
+    labels stay stable) from ``processed_dir`` - the output of :func:`save_processed_pools`.
     """
     processed_dir = Path(processed_dir)
     paths = sorted(p for p in processed_dir.glob("*.csv")
@@ -125,14 +95,14 @@ def load_processed_pools(processed_dir):
     return pools
 
 
-def load_usd_prices(path):
+def load_usd_prices(path: str | Path) -> pd.DataFrame:
     """Load the hourly USD token-price table with ``hour`` parsed to datetime."""
     prices = pd.read_csv(path)
     prices["hour"] = pd.to_datetime(prices["hour"].str.replace(" UTC", "", regex=False))
     return prices
 
 
-def save_quantiles(quantiles, path):
+def save_quantiles(quantiles: pd.Series, path: str | Path) -> None:
     """Save the trade-size reference quantiles (a Series) to CSV."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -140,6 +110,6 @@ def save_quantiles(quantiles, path):
     print(f"Saved: {path}")
 
 
-def load_quantiles(path):
+def load_quantiles(path: str | Path) -> pd.Series:
     """Load the trade-size reference quantiles saved by :func:`save_quantiles`."""
     return pd.read_csv(path).set_index("quantile")["usd"]

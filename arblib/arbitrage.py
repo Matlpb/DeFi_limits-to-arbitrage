@@ -1,22 +1,23 @@
 """
 Cross-pool executable prices and the per-pool-pair arbitrage index.
 
-A naive cross-pool *price spread* compares the same swap side across two pools at
-two independent notionals - that is not an executable arbitrage. A real round trip
-closes the position: the second leg is the OPPOSITE side (you sell back what you
-bought) and is fed the REAL output of the first leg (via ``formulas.swap_out``), so
-both fees and both legs' slippage are charged.
+A naive cross-pool price spread compares the same swap side across two pools at two
+independent notionals - that is not an executable arbitrage. A real round trip closes
+the position: the second leg is the opposite side (you sell back what you bought) fed
+the real output of the first leg (via ``formulas.swap_out``), so both fees and both
+legs' slippage are charged.
 
 Everything is expressed for one ordered pool pair, bundled in :class:`PoolPair`:
 
-    pair = build_pool_pair(p1_df, p2_df, usdc_usd, weth_usd, "pancake_1", "uniswap_1")
+    pair = build_pool_pair(p1_df, p2_df, S.token0, S.token1, price0, price1, "pancake_1", "uniswap_1")
     x_in, y_in, S_12_Y, S_12_X, S_21_Y, S_21_X = directional_spreads(pair, Q)
     gaps = gap_series(pair, Q)
-    index = arbitrage_index(pair, quantiles)   # tidy per-trade-size summary
+    index = arbitrage_index(pair, quantiles)
 
-``arbitrage_index`` is the per-pair signal a downstream model consumes over every
-pool pair.
+``arbitrage_index`` is the per-pair signal a downstream model consumes over every pair.
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -24,8 +25,8 @@ import numpy as np
 import pandas as pd
 
 from . import formulas
+from .config import Token
 
-# Columns aligned per block when building a pair.
 _KEEP1 = ["evt_block_number", "evt_block_time", "sqrtPriceX96", "liquidity"]
 _KEEP2 = ["evt_block_number", "sqrtPriceX96", "liquidity"]
 
@@ -35,8 +36,9 @@ class PoolPair:
     """Per-block state of two aligned pools plus the shared market context.
 
     ``sqrtP*`` / ``L*`` are per-block arrays; ``fee*`` are the raw pool fee field
-    (e.g. ``100`` = 0.01%); ``d0`` / ``d1`` are token0 / token1 decimals; the USD
-    prices are held constant over the window. ``name1`` / ``name2`` label the pools.
+    (e.g. ``100`` = 0.01%). ``d0`` / ``d1`` are token0 / token1 decimals; ``price0`` /
+    ``price1`` their constant USD prices; ``sym0`` / ``sym1`` their symbols (labels).
+    ``name1`` / ``name2`` label the two pools.
     """
 
     block: np.ndarray
@@ -48,23 +50,26 @@ class PoolPair:
     fee2: float
     d0: int
     d1: int
-    usdc_usd: float
-    weth_usd: float
+    price0: float
+    price1: float
+    sym0: str
+    sym1: str
     name1: str = "pool1"
     name2: str = "pool2"
 
 
-def build_pool_pair(p1_df, p2_df, usdc_usd, weth_usd, name1="pool1", name2="pool2"):
+def build_pool_pair(p1_df: pd.DataFrame, p2_df: pd.DataFrame, token0: Token, token1: Token,
+                    price0: float, price1: float, name1: str = "pool1",
+                    name2: str = "pool2") -> PoolPair:
     """Align two processed pool frames on the shared block grid into a ``PoolPair``.
 
-    ``p1_df`` / ``p2_df`` are ``ethereum/processed/*.csv`` frames (per-block
-    ``sqrtPriceX96`` / ``liquidity`` / ``fee`` / decimals). ``usdc_usd`` / ``weth_usd``
-    are the constant USD prices per token (see ``sizing.constant_usd_prices``).
+    ``p1_df`` / ``p2_df`` are processed per-pool frames (per-block ``sqrtPriceX96`` /
+    ``liquidity`` / ``fee``). ``token0`` / ``token1`` supply decimals and symbols;
+    ``price0`` / ``price1`` are the constant USD prices of token0 / token1 (see
+    ``sizing.constant_usd_prices``).
     """
     fee1 = float(p1_df["fee"].dropna().unique()[0])
     fee2 = float(p2_df["fee"].dropna().unique()[0])
-    d0 = int(p1_df["token0_decimals"].dropna().iloc[0])   # USDC = 6
-    d1 = int(p1_df["token1_decimals"].dropna().iloc[0])   # WETH = 18
 
     m = p1_df[_KEEP1].merge(p2_df[_KEEP2], on="evt_block_number", suffixes=("_1", "_2"))
 
@@ -76,26 +81,25 @@ def build_pool_pair(p1_df, p2_df, usdc_usd, weth_usd, name1="pool1", name2="pool
         sqrtP2=m["sqrtPriceX96_2"].astype(float).to_numpy(),
         L2=m["liquidity_2"].astype(float).to_numpy(),
         fee2=fee2,
-        d0=d0,
-        d1=d1,
-        usdc_usd=usdc_usd,
-        weth_usd=weth_usd,
+        d0=token0.decimals,
+        d1=token1.decimals,
+        price0=price0,
+        price1=price1,
+        sym0=token0.symbol,
+        sym1=token1.symbol,
         name1=name1,
         name2=name2,
     )
 
 
-def directional_spreads(pair, Q):
+def directional_spreads(pair: PoolPair, Q: float) -> tuple:
     """Four chained round-trip spreads for USD notional ``Q``, per block.
 
-    Sign convention: ``S = log(amount_sent_in) - log(amount_received_back)``.
-    ``S < 0`` => profitable round trip (you end with MORE than you started);
-    ``S > 0`` => loss.
-
-    Direction "1->2": start on pool 1, close out on pool 2. Direction "2->1": the
-    reverse. Each direction is estimated two ways (Y-anchored / X-anchored), which
-    should agree in sign when a real, size-robust gap exists. Each second leg is fed
-    the REAL output amount of the first leg.
+    Sign convention: ``S = log(amount_sent_in) - log(amount_received_back)``, so
+    ``S < 0`` is a profitable round trip and ``S > 0`` a loss. Direction "1->2" starts
+    on pool 1 and closes on pool 2; "2->1" is the reverse. Each direction is estimated
+    two ways (Y-anchored / X-anchored), which should agree in sign when a real,
+    size-robust gap exists. Each second leg is fed the real output of the first leg.
 
     Returns ``(x_in, y_in, S_12_Y, S_12_X, S_21_Y, S_21_X)``.
     """
@@ -104,21 +108,17 @@ def directional_spreads(pair, Q):
     d0, d1 = pair.d0, pair.d1
 
     swap_out = formulas.swap_out
-    x_in = formulas.to_usd(Q, pair.usdc_usd, sense="to_token")   # USDC reference size
-    y_in = formulas.to_usd(Q, pair.weth_usd, sense="to_token")   # WETH reference size
+    x_in = formulas.to_usd(Q, pair.price0, sense="to_token")
+    y_in = formulas.to_usd(Q, pair.price1, sense="to_token")
 
-    # --- Direction 1->2 ---
-    # Y-anchor: sell Y on 1, rebuy Y on 2
     x_1out = swap_out(sqrtP1, L1, y_in, fee1 / 100, d0, d1, side="buy_x")
     y_2out = swap_out(sqrtP2, L2, x_1out, fee2 / 100, d0, d1, side="buy_y")
     S_12_Y = np.log(y_in) - np.log(y_2out)
 
-    # X-anchor: sell X on 1, rebuy X on 2
     y_1out = swap_out(sqrtP1, L1, x_in, fee1 / 100, d0, d1, side="buy_y")
     x_2out = swap_out(sqrtP2, L2, y_1out, fee2 / 100, d0, d1, side="buy_x")
     S_12_X = np.log(x_2out) - np.log(x_in)
 
-    # --- Direction 2->1 (venues swapped) ---
     x_2out_first = swap_out(sqrtP2, L2, y_in, fee2 / 100, d0, d1, side="buy_x")
     y_1out_second = swap_out(sqrtP1, L1, x_2out_first, fee1 / 100, d0, d1, side="buy_y")
     S_21_Y = np.log(y_in) - np.log(y_1out_second)
@@ -130,32 +130,27 @@ def directional_spreads(pair, Q):
     return x_in, y_in, S_12_Y, S_12_X, S_21_Y, S_21_X
 
 
-def gap_series(pair, Q):
+def gap_series(pair: PoolPair, Q: float) -> dict:
     """Per-block profit "gap" series derived from :func:`directional_spreads`.
 
-    Turns the four signed spreads into non-negative achievable profits per
-    direction / anchor, the headline best-per-block ``Gap_t``, the per-anchor
-    direction signal, and whether the two anchors agree on direction. Returns a
-    dict of arrays.
+    The four signed spreads become non-negative achievable profits per direction and
+    anchor: "token0 cheap on pool 1" is captured by ``gap_Y_1cheap = max(0, -S_12_Y)``
+    (Y-anchor, ``S_12_Y < 0`` profitable) and ``gap_X_1cheap = max(0, S_21_X)``
+    (X-anchor, ``S_21_X > 0`` profitable); "token0 cheap on pool 2" symmetrically from
+    ``S_21_Y`` / ``S_12_X``. ``Gap_t`` is the best of the four per block; the anchors'
+    direction signals and their agreement are returned for diagnostics.
     """
     x_in, y_in, S_12_Y, S_12_X, S_21_Y, S_21_X = directional_spreads(pair, Q)
 
-    # --- "X cheap on pool 1" direction ---
-    gap_Y_1cheap = np.maximum(0, -S_12_Y)   # Y-anchor: S_12_Y < 0 is profitable
-    gap_X_1cheap = np.maximum(0, S_21_X)    # X-anchor: S_21_X > 0 is profitable
+    gap_Y_1cheap = np.maximum(0, -S_12_Y)
+    gap_X_1cheap = np.maximum(0, S_21_X)
+    gap_Y_2cheap = np.maximum(0, -S_21_Y)
+    gap_X_2cheap = np.maximum(0, S_12_X)
 
-    # --- "X cheap on pool 2" direction ---
-    gap_Y_2cheap = np.maximum(0, -S_21_Y)   # Y-anchor: S_21_Y < 0 is profitable
-    gap_X_2cheap = np.maximum(0, S_12_X)    # X-anchor: S_12_X > 0 is profitable
-
-    # Headline: best achievable profit, whichever direction/anchor, per block.
     Gap_t = np.maximum.reduce([gap_Y_1cheap, gap_X_1cheap, gap_Y_2cheap, gap_X_2cheap])
 
-    # Which direction is winning, per anchor.
     Y_signals_1cheap = gap_Y_1cheap > gap_Y_2cheap
     X_signals_1cheap = gap_X_1cheap > gap_X_2cheap
-
-    # Diagnostic: do the two anchors agree on direction, per block?
     anchor_agrees = Y_signals_1cheap == X_signals_1cheap
 
     return dict(
@@ -169,19 +164,16 @@ def gap_series(pair, Q):
     )
 
 
-def arbitrage_index(pair, quantiles):
+def arbitrage_index(pair: PoolPair, quantiles: pd.Series) -> pd.DataFrame:
     """Per-trade-size summary of the round-trip gap for one pool pair.
 
-    ``quantiles`` maps a label -> USD reference size (e.g. the pandas Series from
-    ``sizing.trade_size_quantiles``). For each size, run :func:`gap_series` and
-    summarize the best-per-block round trip ``Gap_t`` (in basis points): how often
-    a gap is live, and its mean / median / max, plus the anchor-agreement rate.
-
-    Returns a DataFrame indexed by the quantile label - the per-pair "arbitrage
-    index" a downstream model can stack across every pool pair.
+    ``quantiles`` maps a label -> USD reference size. For each size, :func:`gap_series`
+    is summarised into how often the best-per-block round trip ``Gap_t`` is live and how
+    big it is (basis points), plus the anchor-agreement rate. Returns a DataFrame indexed
+    by the quantile label - the per-pair "arbitrage index" a model stacks across pairs.
     """
     rows = []
-    for label, Q in quantiles.items():
+    for _, Q in quantiles.items():
         r = gap_series(pair, Q)
         gap = r["Gap_t"]
         rows.append({

@@ -1,92 +1,79 @@
 """
 Central configuration for the DeFi arbitrage study.
 
-Keeping these values in one place avoids pasting raw token addresses or query
-ids into the notebooks by hand. The notebooks still *choose* which chain /
-tokens / time window to study, but they pull the constants from here.
+Everything the pipeline needs - which chain, which token pair (addresses +
+decimals), the collection and study windows, and every derived path - is defined
+once here as the :data:`STUDY` settings instance. Notebooks import it
+(``from arblib.config import STUDY as S``) and derive the rest, so re-parametrising
+the whole study for a different pair or chain is a single edit to :data:`STUDY`.
 """
 
-# ---------------------------------------------------------------------------
-# Dune saved-query ids (one query per DEX, parameterised by chain + tokens)
-# ---------------------------------------------------------------------------
-# Swap-level mid prices.
-SWAP_QUERY_IDS = {
-    "uniswap": 7727307,    # 7423632 Uniswap   (base, ethereum, arbitrum)
-    "pancake": 7727319,    # 7429756 PancakeSwap (base, ethereum, arbitrum)
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+SWAP_QUERY_IDS: dict[str, int] = {
+    "uniswap": 7727307,
+    "pancake": 7727319,
 }
 
-# Liquidity state (mint / burn events) used to reconstruct liquidity per block.
-LIQUIDITY_QUERY_IDS = {
+LIQUIDITY_QUERY_IDS: dict[str, int] = {
     "uniswap": 7727404,
     "pancake": 7727327,
 }
 
-# Gas queries.
-#   ``chain_gas_price``  - per-block base fee + utilization for the whole chain,
-#                          parameterised by chain + time window only (not per-DEX).
-#   ``*_gas_per_swap``   - realised gas used per swap on each DEX, parameterised
-#                          like the swap queries (chain + token pair + window).
-GAS_QUERY_IDS = {
-    "chain_gas_price":      7748900,
+GAS_QUERY_IDS: dict[str, int] = {
+    "chain_gas_price": 7748900,
     "pancake_gas_per_swap": 7749289,
     "uniswap_gas_per_swap": 7749258,
 }
 
-# Hourly USD price per token (from prices.hour), for both tokens of the pair.
-# Parameterised by chain + token pair + time window (not per-DEX).
-USD_PRICE_QUERY_ID = {
-    "USD_price": 7868130
-}
-# ---------------------------------------------------------------------------
-# Token registry (addresses are lower-cased to match the Dune output)
-# ---------------------------------------------------------------------------
-TOKENS = {
-    "ethereum": {
-        "WETH": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
-        "USDC": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-    },
-    "base": {
-        "WETH": "0x4200000000000000000000000000000000000006",
-        "USDC": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
-    },
+USD_PRICE_QUERY_ID: dict[str, int] = {
+    "USD_price": 7868130,
 }
 
-# File name per DEX within each chain sub-folder. Keys keep the ``df_<dex>``
-# form so the pool-splitting step names pools ``uniswap_1``, ``pancake_1`` ...
-SWAP_FILES = {
+SWAP_FILES: dict[str, str] = {
     "df_uniswap": "df_uniswap_swap.csv",
     "df_pancake": "df_pancake_swap.csv",
 }
 
-LIQUIDITY_FILES = {
+LIQUIDITY_FILES: dict[str, str] = {
     "df_uniswap": "df_uniswap_liq.csv",
     "df_pancake": "df_pancake_liq.csv",
 }
 
-# Gas files live under ``<chain>/gas/``. Keys match :data:`GAS_QUERY_IDS`.
-GAS_FILES = {
-    "chain_gas_price":      "chain_gas_price.csv",
+GAS_FILES: dict[str, str] = {
+    "chain_gas_price": "chain_gas_price.csv",
     "pancake_gas_per_swap": "pancake_gas_per_swap.csv",
     "uniswap_gas_per_swap": "uniswap_gas_per_swap.csv",
 }
 
-def build_collection_params(chain, token0, token1, start_ts, end_ts):
-    """Assemble the parameter dict expected by the Dune saved queries.
 
-    Parameters
-    ----------
-    chain : str
-        Blockchain name, e.g. ``"base"`` or ``"ethereum"``.
-    token0, token1 : str
-        Token addresses (use the :data:`TOKENS` registry).
-    start_ts, end_ts : str
-        Collection window, ``"YYYY-MM-DD HH:MM:SS"`` (UTC).
+@dataclass(frozen=True)
+class Token:
+    """One ERC-20 token: its symbol, lower-cased address (as Dune returns it), and decimals."""
 
-    Returns
-    -------
-    dict
-        Ready to pass to :func:`arblib.dune_api.run_dune_saved_query`.
-    """
+    symbol: str
+    address: str
+    decimals: int
+
+
+TOKENS: dict[str, dict[str, Token]] = {
+    "ethereum": {
+        "WETH": Token("WETH", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", 18),
+        "USDC": Token("USDC", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", 6),
+    },
+    "base": {
+        "WETH": Token("WETH", "0x4200000000000000000000000000000000000006", 18),
+        "USDC": Token("USDC", "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", 6),
+    },
+}
+
+
+def build_collection_params(chain: str, token0: str, token1: str,
+                            start_ts: str, end_ts: str) -> dict[str, str]:
+    """Assemble the superset parameter dict expected by the Dune saved queries."""
     return {
         "start_ts": start_ts,
         "end_ts": end_ts,
@@ -94,3 +81,81 @@ def build_collection_params(chain, token0, token1, start_ts, end_ts):
         "token1": token1,
         "chain": chain,
     }
+
+
+@dataclass(frozen=True)
+class Settings:
+    """Single source of truth for the study: tokens, windows, and derived paths.
+
+    ``base`` / ``quote`` are the conceptual pair (base priced in quote, e.g. WETH in
+    USDC); they drive the Dune query and the plot labels. ``token0`` / ``token1`` are
+    the same two tokens in on-chain ascending-address order, matching the ``token0`` /
+    ``token1`` columns of the swap data (so ``token0.decimals`` replaces literal
+    decimals). Every path derives from ``base_dir/chain/"<base>_<quote>"``, so a
+    different pair or chain writes to its own folder instead of colliding.
+    """
+
+    chain: str
+    base: Token
+    quote: Token
+    start_ts: str
+    end_ts: str
+    study_start: str
+    max_gap_blocks: int = 6000
+    base_dir: Path = field(default_factory=Path.cwd)
+
+    @property
+    def token0(self) -> Token:
+        return min(self.base, self.quote, key=lambda t: t.address.lower())
+
+    @property
+    def token1(self) -> Token:
+        return max(self.base, self.quote, key=lambda t: t.address.lower())
+
+    @property
+    def data_dir(self) -> Path:
+        return self.base_dir / self.chain / f"{self.base.symbol}_{self.quote.symbol}"
+
+    @property
+    def swaps_dir(self) -> Path:
+        return self.data_dir / "swaps"
+
+    @property
+    def liquidity_dir(self) -> Path:
+        return self.data_dir / "liquidity"
+
+    @property
+    def gas_dir(self) -> Path:
+        return self.data_dir / "gas"
+
+    @property
+    def prices_dir(self) -> Path:
+        return self.data_dir / "prices"
+
+    @property
+    def processed_dir(self) -> Path:
+        return self.data_dir / "processed"
+
+    @property
+    def prices_path(self) -> Path:
+        return self.prices_dir / "USD_token_prices.csv"
+
+    @property
+    def quantiles_path(self) -> Path:
+        return self.data_dir / "trade_size_quantiles.csv"
+
+    @property
+    def collection_params(self) -> dict[str, str]:
+        return build_collection_params(
+            self.chain, self.base.address, self.quote.address, self.start_ts, self.end_ts
+        )
+
+
+STUDY = Settings(
+    chain="ethereum",
+    base=TOKENS["ethereum"]["WETH"],
+    quote=TOKENS["ethereum"]["USDC"],
+    start_ts="2025-12-31 15:00:00",
+    end_ts="2025-12-31 16:00:00",
+    study_start="2025-12-31 15:15:00",
+)

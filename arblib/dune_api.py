@@ -10,6 +10,8 @@ The flow for a saved query is always the same:
 if it fails).
 """
 
+from __future__ import annotations
+
 import time
 
 import pandas as pd
@@ -18,7 +20,7 @@ import requests
 BASE_URL = "https://api.dune.com/api/v1"
 
 
-def make_headers(api_key):
+def make_headers(api_key: str) -> dict[str, str]:
     """Build the auth headers used by every request."""
     return {
         "X-Dune-API-Key": api_key,
@@ -26,7 +28,7 @@ def make_headers(api_key):
     }
 
 
-def get_query_parameters(query_id, headers):
+def get_query_parameters(query_id: int, headers: dict[str, str]) -> set[str] | None:
     """Return the set of parameter keys a saved query declares.
 
     Returns ``None`` if the query metadata can't be read (e.g. private query or
@@ -40,7 +42,8 @@ def get_query_parameters(query_id, headers):
     return {p["key"] for p in declared if "key" in p}
 
 
-def select_params(query_id, params, headers, label=""):
+def select_params(query_id: int, params: dict[str, str], headers: dict[str, str],
+                  label: str = "") -> dict[str, str]:
     """Keep only the entries of ``params`` that ``query_id`` actually declares.
 
     Lets a single superset ``params`` dict be reused across every query: keys a
@@ -59,7 +62,8 @@ def select_params(query_id, params, headers, label=""):
     return selected
 
 
-def execute_query(query_id, params, headers, label=""):
+def execute_query(query_id: int, params: dict[str, str], headers: dict[str, str],
+                  label: str = "") -> str | None:
     """Trigger a saved query and return its ``execution_id`` (or ``None``).
 
     Only the parameters the query declares are sent, so passing a superset (a
@@ -81,7 +85,8 @@ def execute_query(query_id, params, headers, label=""):
     return data.get("execution_id")
 
 
-def wait_for_execution(execution_id, headers, label="", sleep=3, max_wait=None):
+def wait_for_execution(execution_id: str, headers: dict[str, str], label: str = "",
+                       sleep: int = 3, max_wait: float | None = None) -> bool:
     """Poll the execution status until it completes. Returns success flag.
 
     If ``max_wait`` (seconds) is given and exceeded before the query completes,
@@ -107,7 +112,7 @@ def wait_for_execution(execution_id, headers, label="", sleep=3, max_wait=None):
         time.sleep(sleep)
 
 
-def fetch_results(execution_id, headers, label=""):
+def fetch_results(execution_id: str, headers: dict[str, str], label: str = "") -> pd.DataFrame:
     """Download the result rows of a completed execution as a ``DataFrame``.
 
     Dune sometimes returns space-padded column names and string values; they are
@@ -130,7 +135,8 @@ def fetch_results(execution_id, headers, label=""):
     return df
 
 
-def run_dune_saved_query(query_id, params, headers, label="", max_wait=None):
+def run_dune_saved_query(query_id: int, params: dict[str, str], headers: dict[str, str],
+                         label: str = "", max_wait: float | None = None) -> pd.DataFrame:
     """Run a saved query end-to-end (execute -> wait -> fetch).
 
     Returns an empty ``DataFrame`` if the query is unavailable, fails, or does

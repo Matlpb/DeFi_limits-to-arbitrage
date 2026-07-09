@@ -9,27 +9,31 @@ Views:
     * plot_directional_spreads      - per-block cross-pool round-trip spreads
     * plot_custom_size              - the same, at a user-chosen trade size
 
-The round-trip plotters take an ``arblib.arbitrage.PoolPair`` and delegate the
-P&L to ``arblib.arbitrage``.
+The round-trip plotters take an ``arblib.arbitrage.PoolPair`` and delegate the P&L
+to ``arblib.arbitrage``.
 """
+
+from __future__ import annotations
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.axes import Axes
 
 from . import arbitrage
+from .arbitrage import PoolPair
 
 
-def _style_time_axis(ax, hour_interval=2, fmt="%H:%M:%S"):
-    """Apply the shared time-axis formatting used by every plot."""
+def _style_time_axis(ax: Axes, hour_interval: int = 2, fmt: str = "%H:%M:%S") -> None:
+    """Apply the shared time-axis formatting used by every price plot."""
     ax.grid(True, alpha=0.3)
     ax.xaxis.set_major_formatter(mdates.DateFormatter(fmt))
     ax.xaxis.set_major_locator(mdates.HourLocator(interval=hour_interval))
     plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
 
 
-def plot_dex_pools(filtered_pools, dex="uniswap"):
+def plot_dex_pools(filtered_pools: dict[str, pd.DataFrame], dex: str = "uniswap") -> None:
     """Plot every pool of ``dex``: one subplot per pool plus a combined view."""
     pools = {k: v for k, v in filtered_pools.items() if k.startswith(dex)}
     if not pools:
@@ -66,7 +70,7 @@ def plot_dex_pools(filtered_pools, dex="uniswap"):
         print(f"  {pool_name}: {len(pools[pool_name])} blocks")
 
 
-def plot_pairwise_prices(price_differences, ncols=2):
+def plot_pairwise_prices(price_differences: dict[str, pd.DataFrame], ncols: int = 2) -> None:
     """Plot both pool price series for every cross-DEX pair."""
     n_pairs = len(price_differences)
     nrows = (n_pairs + ncols - 1) // ncols
@@ -82,7 +86,7 @@ def plot_pairwise_prices(price_differences, ncols=2):
         ax.plot(times, df[f"{pool2}_price"], linewidth=1.2, label=pool2, alpha=0.85, linestyle="--")
         ax.set_title(pair_name.replace("_vs_", "  vs  "), fontsize=11, fontweight="bold")
         ax.set_xlabel("Block Time", fontsize=9)
-        ax.set_ylabel("Price (USDC/ETH)", fontsize=9)
+        ax.set_ylabel("Price", fontsize=9)
         ax.legend(fontsize=9)
         _style_time_axis(ax, fmt="%H:%M")
 
@@ -97,14 +101,16 @@ def plot_pairwise_prices(price_differences, ncols=2):
     plt.show()
 
 
-def plot_trade_size_distributions(x_in, y_in):
-    """Per-leg USD trade-size histograms (USDC-in and WETH-in), log-scaled x-axis."""
+def plot_trade_size_distributions(x_in: pd.DataFrame, y_in: pd.DataFrame,
+                                  sym0: str = "token0", sym1: str = "token1") -> None:
+    """Per-leg USD trade-size histograms (token0-in and token1-in), log-scaled x-axis."""
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
 
-    for ax, data, title, color in [
-        (axes[0], x_in["amount0_usd"], "amount0 - token0 (USDC) in", "steelblue"),
-        (axes[1], y_in["amount1_usd"], "amount1 - token1 (WETH) in", "indianred"),
-    ]:
+    panels = [
+        (axes[0], x_in["amount0_usd"], f"amount0 - token0 ({sym0}) in", "steelblue"),
+        (axes[1], y_in["amount1_usd"], f"amount1 - token1 ({sym1}) in", "indianred"),
+    ]
+    for ax, data, title, color in panels:
         bins = np.logspace(np.log10(data.min()), np.log10(data.max()), 40)
         ax.hist(data, bins=bins, color=color, edgecolor="white")
         ax.set_xscale("log")
@@ -117,7 +123,7 @@ def plot_trade_size_distributions(x_in, y_in):
     plt.show()
 
 
-def plot_global_trade_size(trade_sizes, quantiles):
+def plot_global_trade_size(trade_sizes: pd.Series, quantiles: pd.Series) -> None:
     """Pooled (both-legs) USD trade-size distribution with the quantile refs marked."""
     fig, ax = plt.subplots(figsize=(9, 5))
     bins = np.logspace(np.log10(trade_sizes.min()), np.log10(trade_sizes.max()), 50)
@@ -134,20 +140,19 @@ def plot_global_trade_size(trade_sizes, quantiles):
     plt.show()
 
 
-def plot_directional_spreads(pair, Q, title_prefix):
+def plot_directional_spreads(pair: PoolPair, Q: float, title_prefix: str) -> None:
     """Two-panel per-block cross-pool round-trip spread (bps) for USD notional ``Q``.
 
     Left: direction 1->2 (start ``pair.name1``, close ``pair.name2``); right: 2->1.
-    Each panel overlays the two anchors (Y / X). Break-even at 0; a series **below**
-    it is a profitable round trip (sign convention of
-    :func:`arblib.arbitrage.directional_spreads`, which produces the P&L).
+    Each panel overlays the two anchors. Break-even at 0; a series below it is a
+    profitable round trip (sign convention of :func:`arblib.arbitrage.directional_spreads`).
     """
     x_in, y_in, S_12_Y, S_12_X, S_21_Y, S_21_X = arbitrage.directional_spreads(pair, Q)
 
     fig, (ax12, ax21) = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
     fig.suptitle(
         f"{title_prefix} - ref ${Q:,.0f}  "
-        f"(x_in={x_in:,.2f} USDC, y_in={y_in:.4f} WETH) - chained real amounts",
+        f"(x_in={x_in:,.2f} {pair.sym0}, y_in={y_in:.4f} {pair.sym1}) - chained real amounts",
         fontsize=12,
     )
 
@@ -170,12 +175,13 @@ def plot_directional_spreads(pair, Q, title_prefix):
     plt.show()
 
 
-def plot_custom_size(pair, usd_amount=None, x_amount=None, y_amount=None,
-                     title_prefix="Custom trade size"):
+def plot_custom_size(pair: PoolPair, usd_amount: float | None = None,
+                     x_amount: float | None = None, y_amount: float | None = None,
+                     title_prefix: str = "Custom trade size") -> None:
     """Directional-spread plot at a user-specified reference size (not a quantile).
 
-    Provide exactly one of ``usd_amount`` (USD notional), ``x_amount`` (USDC, human),
-    or ``y_amount`` (WETH, human). ``x_amount`` / ``y_amount`` are converted to an
+    Provide exactly one of ``usd_amount`` (USD notional), ``x_amount`` (token0, human),
+    or ``y_amount`` (token1, human). ``x_amount`` / ``y_amount`` are converted to an
     equivalent USD ``Q`` via the pair's fixed USD rates.
     """
     n_given = sum(v is not None for v in (usd_amount, x_amount, y_amount))
@@ -185,8 +191,8 @@ def plot_custom_size(pair, usd_amount=None, x_amount=None, y_amount=None,
     if usd_amount is not None:
         Q = usd_amount
     elif x_amount is not None:
-        Q = x_amount * pair.usdc_usd
+        Q = x_amount * pair.price0
     else:
-        Q = y_amount * pair.weth_usd
+        Q = y_amount * pair.price1
 
     plot_directional_spreads(pair, Q, title_prefix)
