@@ -27,14 +27,78 @@ import pandas as pd
 _METADATA_COLS = ["pool", "dex", "token0", "token1", "token0_decimals", "token1_decimals"]
 
 
+def verify_token_decimals(swaps, token0, token1, d0, d1):
+    """Assert token identity <-> decimals consistency across all pooled swaps.
+
+    Every token address must map to exactly one ``decimals`` value (a conflict
+    would be a units bug), and ``token0`` / ``token1`` must be the same expected
+    assets in every pool (Uniswap / Pancake order tokens by address, so this is
+    not guaranteed a priori). ``token0`` / ``token1`` are the expected addresses
+    with expected decimals ``d0`` / ``d1``. Prints a summary; raises on any mismatch.
+    """
+    expected = {token0: d0, token1: d1}
+
+    pairs = pd.concat([
+        swaps[["token0", "token0_decimals"]].rename(
+            columns={"token0": "addr", "token0_decimals": "dec"}
+        ),
+        swaps[["token1", "token1_decimals"]].rename(
+            columns={"token1": "addr", "token1_decimals": "dec"}
+        ),
+    ])
+    for addr, decs in pairs.groupby("addr")["dec"].unique().items():
+        assert len(decs) == 1, f"{addr} has conflicting decimals {decs}"
+        print(f"{addr} -> {decs[0]} decimals")
+        if addr in expected:
+            assert decs[0] == expected[addr], (
+                f"{addr}: expected {expected[addr]} decimals, got {decs[0]}"
+            )
+
+    assert set(swaps["token0"].unique()) == {token0}, swaps["token0"].unique()
+    assert set(swaps["token1"].unique()) == {token1}, swaps["token1"].unique()
+    print(f"\nOK: token0 ({d0} dp), token1 ({d1} dp) consistent across all pools.")
+
+
+def count_swaps(dfs):
+    """Add a ``nb_swaps`` column counting swaps per (pool, block).
+
+    Run this *before* :func:`clean_all` / :func:`keep_latest_swap_per_block`::
+
+        dfs = pp.count_swaps(dfs)      # tag each row with its block's swap count
+        filtered_dfs = pp.clean_all(dfs)
+
+    The number is written on every raw swap row, so when ``clean_all`` collapses
+    each block down to its last swap, the surviving row keeps the true count of
+    swaps that occurred in that block. Each DataFrame is modified in place and
+    returned.
+    """
+    for name, df in dfs.items():
+        if df is None or df.empty:
+            print(f"[INFO] {name}: empty dataframe")
+            continue
+        df["nb_swaps"] = df.groupby(["pool", "evt_block_number"])[
+            "evt_index"
+        ].transform("size")
+        print(f"Counted swaps {name}: {len(df)} rows")
+    return dfs
+
+
 def keep_latest_swap_per_block(df, label=""):
     """Keep, per (pool, block), the swap with the highest ``evt_index``.
 
     The highest ``evt_index`` is the last swap in the block, so its
-    ``mid_price`` is the price at the end of that block. Before collapsing the
-    partition, ``gas_price`` is overwritten with the *maximum* gas price across
-    all swaps in that block (every pool), so the kept row carries the block's
-    worst-case gas cost rather than just the last swap's.
+    ``sqrtPriceX96`` is the price at the end of that block. Before collapsing the
+    partition, ``gas_price`` is replaced by two aggregates over *this pool's*
+    swaps in that block: ``gas_price_max`` (worst-case) and ``gas_price_med``
+    (median), so the kept row carries both rather than just the last swap's gas
+    cost. Likewise ``gas_used`` is replaced by its per-(pool, block) median
+    ``gas_used_med``. These match the ``(pool, block)`` grouping of ``nb_swaps``
+    and the surviving row, so a single-swap partition has ``gas_price_med ==
+    gas_price_max`` and ``gas_used_med`` equal to that swap's ``gas_used``.
+
+    If a ``nb_swaps`` column is present (see :func:`count_swaps`), the surviving
+    row simply carries it, so the per-block swap count is preserved through the
+    collapse.
     """
     if df is None or df.empty:
         print(f"[INFO] {label}: empty dataframe")
@@ -42,10 +106,17 @@ def keep_latest_swap_per_block(df, label=""):
 
     df = df.copy()
 
-    # Max gas over the whole block (across all pools), assigned to every row so
-    # the one we keep per (pool, block) ends up with the block-wide max.
     if "gas_price" in df.columns:
-        df["gas_price"] = df.groupby("evt_block_number")["gas_price"].transform("max")
+        pool_block_gas = df.groupby(["pool", "evt_block_number"])["gas_price"]
+        df["gas_price_max"] = pool_block_gas.transform("max")
+        df["gas_price_med"] = pool_block_gas.transform("median")
+        df = df.drop(columns="gas_price")
+
+    if "gas_used" in df.columns:
+        df["gas_used_med"] = df.groupby(["pool", "evt_block_number"])["gas_used"].transform(
+            "median"
+        )
+        df = df.drop(columns="gas_used")
 
     df = df.loc[df.groupby(["pool", "evt_block_number"])["evt_index"].idxmax()]
     return df.reset_index(drop=True)
@@ -208,14 +279,19 @@ def reconstruct_pool_timeseries(pool_dfs):
         result = grid.merge(one_per_block, on="evt_block_number", how="left")
 
         # Forward-fill the price and the constant metadata (but never the time).
-        result["mid_price"] = result["mid_price"].ffill()
+        result["sqrtPriceX96"] = result["sqrtPriceX96"].ffill()
         for col in _METADATA_COLS:
             if col in result.columns:
                 result[col] = result[col].ffill()
 
+        # Reconstructed (forward-filled) blocks had no swap of their own, so
+        # their swap count is 0 - never forward-filled.
+        if "nb_swaps" in result.columns:
+            result["nb_swaps"] = result["nb_swaps"].fillna(0).astype(int)
+
         reconstructed[pool_name] = result.reset_index(drop=True)
 
-        filled = result["mid_price"].notna().sum()
+        filled = result["sqrtPriceX96"].notna().sum()
         print(
             f"{pool_name}: {len(df)} trades -> {filled} blocks "
             f"({100 * filled / len(result):.1f}%)"

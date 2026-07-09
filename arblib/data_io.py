@@ -6,6 +6,7 @@ CSV per DEX. These helpers keep the save / load logic out of the notebooks.
 """
 
 import os
+from pathlib import Path
 
 import pandas as pd
 
@@ -99,3 +100,46 @@ def load_pool_csvs(data_dir, files=None):
             print(f"File not found: {filename}")
 
     return dfs
+
+
+def load_processed_pools(processed_dir):
+    """Load every processed per-pool CSV into ``{pool_name: df}``.
+
+    Reads only ``uniswap_*`` / ``pancake_*`` files (uniswap first, so cross-DEX
+    pairwise labels stay stable) from ``processed_dir`` - the output of
+    :func:`save_processed_pools`.
+    """
+    processed_dir = Path(processed_dir)
+    paths = sorted(p for p in processed_dir.glob("*.csv")
+                   if p.stem.startswith(("uniswap", "pancake")))
+    paths = [p for p in paths if p.stem.startswith("uniswap")] + \
+            [p for p in paths if not p.stem.startswith("uniswap")]
+
+    pools = {}
+    for path in paths:
+        df = pd.read_csv(path, skipinitialspace=True)
+        df.columns = df.columns.str.strip()
+        pools[path.stem] = df
+
+    print(f"Loaded {len(pools)} processed pools: {list(pools)}")
+    return pools
+
+
+def load_usd_prices(path):
+    """Load the hourly USD token-price table with ``hour`` parsed to datetime."""
+    prices = pd.read_csv(path)
+    prices["hour"] = pd.to_datetime(prices["hour"].str.replace(" UTC", "", regex=False))
+    return prices
+
+
+def save_quantiles(quantiles, path):
+    """Save the trade-size reference quantiles (a Series) to CSV."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    quantiles.rename("usd").rename_axis("quantile").to_csv(path)
+    print(f"Saved: {path}")
+
+
+def load_quantiles(path):
+    """Load the trade-size reference quantiles saved by :func:`save_quantiles`."""
+    return pd.read_csv(path).set_index("quantile")["usd"]

@@ -10,6 +10,22 @@ from itertools import combinations
 
 import pandas as pd
 
+from . import formulas
+
+
+def add_mid_price(pools):
+    """Add a ``mid_price`` column to every processed pool frame (in place).
+
+    The mid price (token0 per token1, e.g. USDC per WETH) is computed from
+    ``sqrtPriceX96`` via :func:`arblib.formulas.mid_price`, since the processed
+    CSVs store ``sqrtPriceX96`` but not the price. Returns ``pools``.
+    """
+    for df in pools.values():
+        df["mid_price"] = formulas.mid_price(
+            df["sqrtPriceX96"], df["token0_decimals"], df["token1_decimals"]
+        )
+    return pools
+
 
 def _group_pools_by_dex(filtered_pools):
     """Group ``{pool_name: df}`` by DEX -> ``{dex: {pool_name: df}}``."""

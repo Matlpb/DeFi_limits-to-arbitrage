@@ -32,6 +32,11 @@ GAS_QUERY_IDS = {
     "uniswap_gas_per_swap": 7749258,
 }
 
+# Hourly USD price per token (from prices.hour), for both tokens of the pair.
+# Parameterised by chain + token pair + time window (not per-DEX).
+USD_PRICE_QUERY_ID = {
+    "USD_price": 7868130
+}
 # ---------------------------------------------------------------------------
 # Token registry (addresses are lower-cased to match the Dune output)
 # ---------------------------------------------------------------------------
