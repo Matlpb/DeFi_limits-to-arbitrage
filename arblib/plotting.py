@@ -8,6 +8,7 @@ Views:
     * plot_global_trade_size        - pooled trade-size distribution + quantiles
     * plot_directional_spreads      - per-block cross-pool round-trip spreads
     * plot_custom_size              - the same, at a user-chosen trade size
+    * plot_arb_index                - heatmap of the round-trip gap over all pairs
 
 The round-trip plotters take an ``arblib.arbitrage.PoolPair`` and delegate the P&L
 to ``arblib.arbitrage``.
@@ -196,3 +197,34 @@ def plot_custom_size(pair: PoolPair, usd_amount: float | None = None,
         Q = y_amount * pair.price1
 
     plot_directional_spreads(pair, Q, title_prefix)
+
+
+def plot_arb_index(arb_index: dict[str, pd.DataFrame], q: float) -> None:
+    """Heatmap of the round-trip gap ``Gap_t`` (bps) across pairs and blocks at size ``q``.
+
+    ``arb_index`` is the ``{pair_name: frame}`` mapping from
+    :func:`arblib.arbitrage.all_pairs_gap_series`; rows are pool pairs, columns are
+    blocks, and ``q`` selects the reference-size column. A coloured cell is a profitable
+    round trip after both fees + slippage, so a near-blank map means little arbitrage in
+    the sample. The count of live (pair, block) cells is printed alongside.
+    """
+    pairs = list(arb_index)
+    mat = np.vstack([arb_index[p][q].to_numpy() for p in pairs])
+    blocks = next(iter(arb_index.values())).index.to_numpy()
+
+    n_live = int((mat > 0).sum())
+    print(f"q{int(q * 100)}: {n_live} live (pair, block) cells of {mat.size} "
+          f"| max gap = {mat.max():.2f} bps")
+
+    fig, ax = plt.subplots(figsize=(14, 0.45 * len(pairs) + 2))
+    im = ax.imshow(
+        mat, aspect="auto", cmap="Reds", vmin=0,
+        extent=[blocks[0], blocks[-1], len(pairs) - 0.5, -0.5],
+    )
+    ax.set_yticks(range(len(pairs)))
+    ax.set_yticklabels(pairs, fontsize=8)
+    ax.set_xlabel("block number")
+    ax.set_title(f"Round-trip gap Gap_t [bps] by pool pair - reference size q{int(q * 100)}")
+    fig.colorbar(im, ax=ax, label="Gap_t [bps]  (blank = no arb)")
+    fig.tight_layout()
+    plt.show()

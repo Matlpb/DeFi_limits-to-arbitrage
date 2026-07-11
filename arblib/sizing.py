@@ -24,21 +24,10 @@ _INFO_COLS = ["evt_tx_hash", "dex", "pool", "evt_block_number", "hour"]
 
 
 def pooled_swaps(dfs: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    """Concat every DEX / pool extract into one frame, keeping static-fee pools only.
-
-    A pool whose ``fee`` field is not constant is dropped, since the constant-fee AMM
-    math used downstream would not apply.
-    """
+    """Concat every DEX / pool extract into one frame of swaps."""
     swaps = pd.concat(dfs.values(), ignore_index=True)
-
-    fee_per_pool = swaps.groupby("pool")["fee"].nunique()
-    static_pools = fee_per_pool[fee_per_pool == 1].index
-    dropped_pools = fee_per_pool[fee_per_pool > 1].index
-    swaps = swaps[swaps["pool"].isin(static_pools)].reset_index(drop=True)
-
     print(f"Total swaps across all pools / DEXes: {len(swaps)}")
     print(f"Distinct pools: {swaps['pool'].nunique()} | DEX tags: {list(swaps['dex'].unique())}")
-    print(f"Dropped {len(dropped_pools)} dynamic-fee pool(s): {list(dropped_pools)}")
     return swaps
 
 

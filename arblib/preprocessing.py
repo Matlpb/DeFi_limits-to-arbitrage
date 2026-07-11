@@ -194,6 +194,30 @@ def filter_pools_by_swap_gap(pool_dfs: dict[str, pd.DataFrame],
     return kept, dropped
 
 
+def filter_pools_by_constant_fee(pool_dfs: dict[str, pd.DataFrame]) -> tuple[dict[str, pd.DataFrame], list]:
+    """Drop pools whose ``fee`` is not constant over the window (dynamic-fee pools).
+
+    The execution-price / round-trip math assumes a single fixed fee per pool, so a pool
+    whose ``fee`` field takes more than one value (e.g. a Uniswap v4 dynamic-fee hook) is
+    excluded. Returns ``(kept, dropped)``.
+    """
+    kept = {}
+    dropped = []
+    for pool_name, df in pool_dfs.items():
+        fees = sorted(df["fee"].dropna().unique().tolist())
+        if len(fees) == 1:
+            kept[pool_name] = df
+        else:
+            dropped.append((pool_name, f"fees = {fees}"))
+
+    print(f"Kept {len(kept)} constant-fee pools")
+    if dropped:
+        print(f"Dropped {len(dropped)} dynamic-fee pool(s):")
+        for pool_name, reason in dropped:
+            print(f"  {pool_name}: {reason}")
+    return kept, dropped
+
+
 def _complete_block_times(grid: pd.DataFrame) -> pd.DataFrame:
     """Fill ``evt_block_time`` for blocks no pool traded in.
 

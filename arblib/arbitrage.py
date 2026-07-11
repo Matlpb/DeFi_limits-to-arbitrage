@@ -20,6 +20,7 @@ Everything is expressed for one ordered pool pair, bundled in :class:`PoolPair`:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import combinations
 
 import numpy as np
 import pandas as pd
@@ -186,3 +187,31 @@ def arbitrage_index(pair: PoolPair, quantiles: pd.Series) -> pd.DataFrame:
             "anchor_agreement": float(r["anchor_agrees"].mean()),
         })
     return pd.DataFrame(rows, index=pd.Index(quantiles.index, name="quantile"))
+
+
+def gap_index_frame(pair: PoolPair, quantiles: pd.Series) -> pd.DataFrame:
+    """Per-block best round-trip gap ``Gap_t`` (bps) for one pool pair.
+
+    One column per reference trade size (the ``quantiles`` labels), indexed by block -
+    the arbitrage-index *time series* for the pair, of which :func:`arbitrage_index` is
+    the cross-block summary.
+    """
+    data = {label: gap_series(pair, Q)["Gap_t"] * 1e4 for label, Q in quantiles.items()}
+    return pd.DataFrame(data, index=pd.Index(pair.block, name="block"))
+
+
+def all_pairs_gap_series(pools: dict[str, pd.DataFrame], quantiles: pd.Series,
+                         token0: Token, token1: Token, price0: float,
+                         price1: float) -> dict[str, pd.DataFrame]:
+    """Arbitrage-index time series for every pool pair, keyed by pair name.
+
+    Every unordered pair of ``pools`` is built - intra-DEX (e.g. ``uniswap_1_vs_uniswap_2``)
+    as well as cross-DEX - and turned into its :func:`gap_index_frame`. ``pools`` are assumed
+    constant-fee (the transform step drops dynamic-fee pools). Returns
+    ``{"<poolA>_vs_<poolB>": frame}``, the per-pair signal a downstream model stacks.
+    """
+    out = {}
+    for n1, n2 in combinations(pools, 2):
+        pair = build_pool_pair(pools[n1], pools[n2], token0, token1, price0, price1, n1, n2)
+        out[f"{n1}_vs_{n2}"] = gap_index_frame(pair, quantiles)
+    return out
