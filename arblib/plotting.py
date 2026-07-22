@@ -9,6 +9,7 @@ Views:
     * plot_directional_spreads      - per-block cross-pool round-trip spreads
     * plot_custom_size              - the same, at a user-chosen trade size
     * plot_arb_index                - heatmap of the round-trip gap over all pairs
+    * plot_arb_durations            - arbitrage-hold durations per pool pair
 
 The round-trip plotters take an ``arblib.arbitrage.PoolPair`` and delegate the P&L
 to ``arblib.arbitrage``.
@@ -227,4 +228,32 @@ def plot_arb_index(arb_index: dict[str, pd.DataFrame], q: float) -> None:
     ax.set_title(f"Round-trip gap Gap_t [bps] by pool pair - reference size q{int(q * 100)}")
     fig.colorbar(im, ax=ax, label="Gap_t [bps]  (blank = no arb)")
     fig.tight_layout()
+    plt.show()
+
+
+def plot_arb_durations(durations: pd.DataFrame, q: float) -> None:
+    """One graph for trade size ``q``: the arb-hold duration *sequence* of each pool pair.
+
+    ``durations`` is the long frame from :func:`arblib.arbitrage.arb_hold_durations`. For
+    each pool pair its spells (runs of consecutive blocks with ``Gap_t > 0``) are plotted in
+    order of occurrence - x = spell index (1st, 2nd, ...), y = duration in blocks - as one
+    line per pair. This is the per-pair duration sequence (e.g. 2, 6, 5, 4, ...); a line's
+    length is that pair's number of spells. Only pairs with >= 1 spell are shown.
+    """
+    sub = durations[durations["quantile"] == q]
+    seqs = {pair: g["duration"].to_numpy() for pair, g in sub.groupby("pair", sort=False)}
+    if not seqs:
+        print(f"q{int(q * 100)}: no live arbitrage spells at this trade size")
+        return
+
+    cmap = plt.get_cmap("tab20")
+    fig, ax = plt.subplots(figsize=(12, 6), layout="constrained")
+    for i, (pair, seq) in enumerate(seqs.items()):
+        ax.plot(range(1, len(seq) + 1), seq, marker="o", ms=4, lw=1.0, alpha=0.8,
+                color=cmap(i % 20), label=pair)
+
+    ax.set_xlabel("spell index (order of occurrence)")
+    ax.set_ylabel("arb-hold duration [consecutive blocks with Gap_t > 0]")
+    ax.set_title(f"Arbitrage-hold duration sequence per pool pair - trade size q{int(q * 100)}")
+    ax.legend(fontsize=6, ncol=2, loc="upper left", bbox_to_anchor=(1.01, 1.0))
     plt.show()

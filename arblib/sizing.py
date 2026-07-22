@@ -6,7 +6,7 @@ distribution and its quantile reference sizes, which the arbitrage step then use
 the notionals at which to price executable round trips.
 
     swaps = pooled_swaps(dfs)
-    swaps = add_usd_amounts(swaps, prices)
+    swaps = add_usd_amounts(swaps, x_usd, y_usd, window_min)
     x_in, y_in = split_in_legs(swaps)
     sizes = pooled_trade_sizes(x_in, y_in)
     quantiles = trade_size_quantiles(sizes, [0.2, 0.4, 0.6, 0.8])
@@ -31,29 +31,45 @@ def pooled_swaps(dfs: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return swaps
 
 
-def add_usd_amounts(swaps: pd.DataFrame, prices: pd.DataFrame) -> pd.DataFrame:
+def _trailing_mean(price_series: pd.DataFrame, window_min: int) -> pd.DataFrame:
+    """Trailing ``window_min``-minute mean of a 1-minute ``[time, price]`` series, shifted one
+    bar so the value at minute t uses only bars strictly before t (no intra-minute or future
+    leak). Returns ``[time, rate]``."""
+    s = price_series.sort_values("time").set_index("time")["price"]
+    rate = s.rolling(f"{window_min}min").mean().shift(1)
+    return rate.rename("rate").reset_index()
+
+
+def add_usd_amounts(swaps: pd.DataFrame, x_usd: pd.DataFrame, y_usd: pd.DataFrame,
+                    window_min: int) -> pd.DataFrame:
     """Add human-unit (``amount*_h``) and USD (``amount*_usd``) amounts to ``swaps``.
 
-    ``prices`` is the hourly USD price table (``hour`` parsed to datetime). Each swap is
-    matched to its block-hour and each token priced by its own hourly rate. Adds a
-    ``hour`` column and returns a copy. Raises if any swap has no matching hourly price.
+    Each token is valued with a *causal* CEX exchange rate: the trailing ``window_min``-minute
+    mean of its Kraken 1-minute USD price (``x_usd`` = token0/USD, ``y_usd`` = token1/USD),
+    shifted so a swap only ever sees past minutes, then matched to each swap by time with a
+    backward ``merge_asof``. This smooths the raw 1-minute quotes into a stable hourly-style
+    rate while never averaging in future prices. Adds ``amount0_h`` / ``amount1_h``,
+    ``amount0_usd`` / ``amount1_usd``, ``time``, ``hour``; returns a copy. Raises if any swap
+    predates the available CEX window (widen ``S.cex_start_ts``).
     """
     swaps = swaps.copy()
     swaps["amount0_h"] = formulas.to_human_units(swaps["amount0"], swaps["token0_decimals"])
     swaps["amount1_h"] = formulas.to_human_units(swaps["amount1"], swaps["token1_decimals"])
+    swaps["time"] = pd.to_datetime(
+        swaps["evt_block_time"].str.replace(" UTC", "", regex=False), utc=True
+    )
+    swaps["hour"] = swaps["time"].dt.floor("h")
+    swaps = swaps.sort_values("time").reset_index(drop=True)
 
-    price_lookup = prices.set_index(["hour", "contract_address"])["price"]
-    swaps["hour"] = pd.to_datetime(
-        swaps["evt_block_time"].str.replace(" UTC", "", regex=False)
-    ).dt.floor("h")
+    x_rate = _trailing_mean(x_usd, window_min).rename(columns={"rate": "x_rate"})
+    y_rate = _trailing_mean(y_usd, window_min).rename(columns={"rate": "y_rate"})
+    swaps = pd.merge_asof(swaps, x_rate, on="time", direction="backward")
+    swaps = pd.merge_asof(swaps, y_rate, on="time", direction="backward")
 
-    rate0 = price_lookup.reindex(pd.MultiIndex.from_arrays([swaps["hour"], swaps["token0"]])).to_numpy()
-    rate1 = price_lookup.reindex(pd.MultiIndex.from_arrays([swaps["hour"], swaps["token1"]])).to_numpy()
-    swaps["amount0_usd"] = formulas.to_usd(swaps["amount0_h"], rate0)
-    swaps["amount1_usd"] = formulas.to_usd(swaps["amount1_h"], rate1)
-
+    swaps["amount0_usd"] = formulas.to_usd(swaps["amount0_h"], swaps["x_rate"].to_numpy())
+    swaps["amount1_usd"] = formulas.to_usd(swaps["amount1_h"], swaps["y_rate"].to_numpy())
     assert swaps["amount0_usd"].notna().all() and swaps["amount1_usd"].notna().all(), \
-        "some swaps have no matching hourly USD price"
+        "some swaps predate the CEX price window - widen S.cex_start_ts"
     return swaps
 
 
@@ -98,10 +114,9 @@ def trade_size_quantiles(trade_sizes: pd.Series,
     return trade_sizes.quantile(list(qs))
 
 
-def constant_usd_prices(prices: pd.DataFrame) -> pd.Series:
-    """Earliest-hour USD price per token (a Series indexed by contract address).
+def constant_usd_prices(x_usd: pd.DataFrame, y_usd: pd.DataFrame) -> tuple[float, float]:
+    """Constant USD price for token0 / token1 = the window mean of each Kraken 1-minute series.
 
-    Holds the USD notional constant over the study window regardless of intraday moves.
-    ``prices`` is the parsed hourly price table.
+    Holds the arbitrage notional fixed regardless of intraday moves. Returns ``(price0, price1)``.
     """
-    return prices.sort_values("hour").groupby("contract_address")["price"].first()
+    return float(x_usd["price"].mean()), float(y_usd["price"].mean())

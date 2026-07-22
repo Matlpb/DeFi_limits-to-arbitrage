@@ -5,6 +5,7 @@ Modules
 -------
 config        : query ids, token registry, parameter helpers
 dune_api      : Dune REST API client (execute / wait / fetch)
+kraken_api    : Kraken REST client (historical 1-min USD prices via Trades)
 data_io       : save / load the raw extracts, processed pools, and quantile refs
 formulas      : pure pricing / AMM primitives (to_usd, mid_price, swap_out, ...)
 preprocessing : clean swaps -> split by pool -> filter -> reconstruct state series
@@ -21,6 +22,7 @@ from . import (
     data_io,
     dune_api,
     formulas,
+    kraken_api,
     plotting,
     preprocessing,
     sizing,
@@ -33,6 +35,7 @@ __all__ = [
     "data_io",
     "dune_api",
     "formulas",
+    "kraken_api",
     "plotting",
     "preprocessing",
     "sizing",

@@ -11,6 +11,7 @@ the whole study for a different pair or chain is a single edit to :data:`STUDY`.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 
 SWAP_QUERY_IDS: dict[str, int] = {
@@ -29,10 +30,6 @@ GAS_QUERY_IDS: dict[str, int] = {
     "uniswap_gas_per_swap": 7749258,
 }
 
-USD_PRICE_QUERY_ID: dict[str, int] = {
-    "USD_price": 7868130,
-}
-
 SWAP_FILES: dict[str, str] = {
     "df_uniswap": "df_uniswap_swap.csv",
     "df_pancake": "df_pancake_swap.csv",
@@ -47,6 +44,12 @@ GAS_FILES: dict[str, str] = {
     "chain_gas_price": "chain_gas_price.csv",
     "pancake_gas_per_swap": "pancake_gas_per_swap.csv",
     "uniswap_gas_per_swap": "uniswap_gas_per_swap.csv",
+}
+
+# Kraken spot market used to price each token in USD (for the volatility control).
+KRAKEN_PAIRS: dict[str, str] = {
+    "WETH": "ETHUSD",
+    "USDC": "USDCUSD",
 }
 
 
@@ -102,6 +105,9 @@ class Settings:
     end_ts: str
     study_start: str
     max_gap_blocks: int = 6000
+    mev_horizon_blocks: int =20
+    vol_horizon_min: int = 30
+    cex_avg_window_min: int = 60
     base_dir: Path = field(default_factory=Path.cwd)
 
     @property
@@ -137,12 +143,27 @@ class Settings:
         return self.data_dir / "processed"
 
     @property
-    def prices_path(self) -> Path:
-        return self.prices_dir / "USD_token_prices.csv"
+    def gas_path(self) -> Path:
+        return self.gas_dir / GAS_FILES["chain_gas_price"]
+
+    @property
+    def x_price_path(self) -> Path:
+        return self.prices_dir / "X_USD_prices.csv"
+
+    @property
+    def y_price_path(self) -> Path:
+        return self.prices_dir / "Y_USD_prices.csv"
 
     @property
     def quantiles_path(self) -> Path:
         return self.data_dir / "trade_size_quantiles.csv"
+
+    @property
+    def cex_start_ts(self) -> str:
+        """Kraken fetch start: ``start_ts`` widened back by ``cex_avg_window_min`` minutes, so
+        the earliest swap already has a full trailing window of past CEX prices to average."""
+        widened = datetime.strptime(self.start_ts, "%Y-%m-%d %H:%M:%S") - timedelta(minutes=self.cex_avg_window_min)
+        return widened.strftime("%Y-%m-%d %H:%M:%S")
 
     @property
     def collection_params(self) -> dict[str, str]:
@@ -158,4 +179,5 @@ STUDY = Settings(
     start_ts="2025-12-31 15:00:00",
     end_ts="2025-12-31 16:00:00",
     study_start="2025-12-31 15:15:00",
+    mev_horizon_blocks=15,   # ~10 min at 12s/block; renamed + updated value
 )

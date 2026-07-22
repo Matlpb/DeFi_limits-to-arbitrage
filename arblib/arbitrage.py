@@ -215,3 +215,30 @@ def all_pairs_gap_series(pools: dict[str, pd.DataFrame], quantiles: pd.Series,
         pair = build_pool_pair(pools[n1], pools[n2], token0, token1, price0, price1, n1, n2)
         out[f"{n1}_vs_{n2}"] = gap_index_frame(pair, quantiles)
     return out
+
+
+def _run_lengths(mask: np.ndarray) -> list:
+    """Lengths of each run of consecutive True values in a boolean array."""
+    mask = np.asarray(mask, dtype=bool)
+    if not mask.any():
+        return []
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], mask.astype(np.int8), [0]))))
+    return (edges[1::2] - edges[0::2]).tolist()
+
+
+def arb_hold_durations(arb_index: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Length (in blocks) of each arbitrage spell, per pool pair and trade size.
+
+    A spell is a run of consecutive blocks where the round-trip gap is live
+    (``Gap_t > 0``); its duration is the number of such blocks. Blocks are consecutive in
+    each ``arb_index`` frame (from :func:`all_pairs_gap_series`), so a run of rows is a run
+    of blocks. Returns a long DataFrame with one row per spell - columns ``pair``,
+    ``quantile``, ``duration`` (always >= 1) - so a pair with spells 1, 3, 2, 2 contributes
+    four rows.
+    """
+    rows = []
+    for pair, frame in arb_index.items():
+        for q in frame.columns:
+            for d in _run_lengths(frame[q].to_numpy() > 0):
+                rows.append({"pair": pair, "quantile": q, "duration": int(d)})
+    return pd.DataFrame(rows, columns=["pair", "quantile", "duration"])

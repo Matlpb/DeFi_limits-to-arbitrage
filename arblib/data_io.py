@@ -95,11 +95,16 @@ def load_processed_pools(processed_dir: str | Path) -> dict[str, pd.DataFrame]:
     return pools
 
 
-def load_usd_prices(path: str | Path) -> pd.DataFrame:
-    """Load the hourly USD token-price table with ``hour`` parsed to datetime."""
-    prices = pd.read_csv(path)
-    prices["hour"] = pd.to_datetime(prices["hour"].str.replace(" UTC", "", regex=False))
-    return prices
+def load_chain_gas(path: str | Path) -> pd.DataFrame:
+    """Load the chain-wide per-block gas table (``block_number`` + ``base_fee_per_gas``)."""
+    return pd.read_csv(path)
+
+
+def load_price_series(path: str | Path) -> pd.DataFrame:
+    """Load a 1-minute ``[time, price]`` USD price series (``time`` parsed to UTC datetime)."""
+    df = pd.read_csv(path)
+    df["time"] = pd.to_datetime(df["time"], utc=True)
+    return df
 
 
 def save_quantiles(quantiles: pd.Series, path: str | Path) -> None:
