@@ -123,24 +123,62 @@ class Settings:
         return self.base_dir / self.chain / f"{self.base.symbol}_{self.quote.symbol}"
 
     @property
+    def data_analysis_dir(self) -> Path:
+        """Main folder holding the raw / intermediate CSV data (swaps, gas, prices, ...)."""
+        return self.data_dir / "data_analysis"
+
+    @property
+    def modeling_dir(self) -> Path:
+        """Main folder holding modeling-ready transformed data (parquet)."""
+        return self.data_dir / "modeling"
+
+    @property
+    def dependent_var_dir(self) -> Path:
+        """Per-pool-pair dependent-variable parquets (Gap_t(Q) and D_t(Q))."""
+        return self.modeling_dir / "dependant_variable"
+
+    @property
+    def covariates_dir(self) -> Path:
+        """Modeling covariates (features), split into common and pool-pair-specific."""
+        return self.modeling_dir / "covariates"
+
+    @property
+    def common_covariates_dir(self) -> Path:
+        """Covariates shared by every pool pair (CEX volatility, chain gas)."""
+        return self.covariates_dir / "common_covariates"
+
+    @property
+    def pair_covariates_dir(self) -> Path:
+        """Per-pool-pair covariates (e.g. MEV, liquidity); filled downstream, empty for now."""
+        return self.covariates_dir / "pool_pair_dependant_covariates"
+
+    @property
+    def cex_vol_path(self) -> Path:
+        return self.common_covariates_dir / "CEX_volatility.parquet"
+
+    @property
+    def chain_covariates_path(self) -> Path:
+        return self.common_covariates_dir / "chain_covariates.parquet"
+
+    @property
     def swaps_dir(self) -> Path:
-        return self.data_dir / "swaps"
+        return self.data_analysis_dir / "swaps"
 
     @property
     def liquidity_dir(self) -> Path:
-        return self.data_dir / "liquidity"
+        return self.data_analysis_dir / "liquidity"
 
     @property
     def gas_dir(self) -> Path:
-        return self.data_dir / "gas"
+        return self.data_analysis_dir / "gas"
 
     @property
     def prices_dir(self) -> Path:
-        return self.data_dir / "prices"
+        return self.data_analysis_dir / "prices"
 
     @property
     def processed_dir(self) -> Path:
-        return self.data_dir / "processed"
+        return self.data_analysis_dir / "processed"
 
     @property
     def gas_path(self) -> Path:
@@ -156,7 +194,7 @@ class Settings:
 
     @property
     def quantiles_path(self) -> Path:
-        return self.data_dir / "trade_size_quantiles.csv"
+        return self.data_analysis_dir / "trade_size_quantiles.csv"
 
     @property
     def cex_start_ts(self) -> str:

@@ -12,6 +12,7 @@ preprocessing : clean swaps -> split by pool -> filter -> reconstruct state seri
 analysis      : cross-DEX mid-price differences
 sizing        : USD trade-size distribution and reference quantiles
 arbitrage     : executable prices + per-pool-pair arbitrage index (PoolPair)
+modeling      : per-pool-pair dependent variable (Gap_t(Q), D_t(Q)) -> parquet 
 plotting      : price, trade-size, and round-trip spread plots
 """
 
@@ -23,6 +24,7 @@ from . import (
     dune_api,
     formulas,
     kraken_api,
+    modeling,
     plotting,
     preprocessing,
     sizing,
@@ -36,6 +38,7 @@ __all__ = [
     "dune_api",
     "formulas",
     "kraken_api",
+    "modeling",
     "plotting",
     "preprocessing",
     "sizing",
