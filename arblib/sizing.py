@@ -50,7 +50,8 @@ def add_usd_amounts(swaps: pd.DataFrame, x_usd: pd.DataFrame, y_usd: pd.DataFram
     backward ``merge_asof``. This smooths the raw 1-minute quotes into a stable hourly-style
     rate while never averaging in future prices. Adds ``amount0_h`` / ``amount1_h``,
     ``amount0_usd`` / ``amount1_usd``, ``time``, ``hour``; returns a copy. Raises if any swap
-    predates the available CEX window (widen ``S.cex_start_ts``).
+    predates the available CEX window (widen the extraction lead: ``S.extract_lead_hours`` /
+    ``S.cex_avg_window_min``).
     """
     swaps = swaps.copy()
     swaps["amount0_h"] = formulas.to_human_units(swaps["amount0"], swaps["token0_decimals"])
@@ -69,7 +70,7 @@ def add_usd_amounts(swaps: pd.DataFrame, x_usd: pd.DataFrame, y_usd: pd.DataFram
     swaps["amount0_usd"] = formulas.to_usd(swaps["amount0_h"], swaps["x_rate"].to_numpy())
     swaps["amount1_usd"] = formulas.to_usd(swaps["amount1_h"], swaps["y_rate"].to_numpy())
     assert swaps["amount0_usd"].notna().all() and swaps["amount1_usd"].notna().all(), \
-        "some swaps predate the CEX price window - widen S.cex_start_ts"
+        "some swaps predate the CEX price window - widen S.extract_lead_hours / S.cex_avg_window_min"
     return swaps
 
 

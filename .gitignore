@@ -4,6 +4,9 @@
 # secrets
 .env
 
+# images (not needed in the repo)
+.png   
+
 # data (large CSVs, not needed in the repo)
 ethereum/
 base/

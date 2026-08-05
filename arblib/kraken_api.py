@@ -1,10 +1,14 @@
 """
 Thin client for the Kraken public REST API (spot USD prices).
 
-The public OHLC endpoint only serves the most recent ~720 candles, so a historical
-window is rebuilt from the Trades endpoint, which paginates back to a pair's inception
-via the ``since`` cursor. :func:`usd_prices_1min` returns a 1-minute close-price series
-for a Kraken pair over a chosen window - used to build the volatility control.
+Two granularities, each from the endpoint that serves it best:
+
+* :func:`usd_prices_1min` - a 1-minute close series over an arbitrary historical window, rebuilt
+  from the **Trades** endpoint (paginated back via the ``since`` cursor), since the OHLC endpoint
+  only serves the most recent ~720 candles. Used to build the block-level volatility control.
+* :func:`usd_prices_daily` - a daily close series over a multi-month lookback, from the **OHLC**
+  endpoint: at the daily interval its ~720-candle limit is ~2 years, so one call covers 6-12 months.
+  Used for the volatility-regime detection.
 """
 
 from __future__ import annotations
@@ -14,7 +18,26 @@ import time
 import pandas as pd
 import requests
 
-_TRADES_URL = "https://api.kraken.com/0/public/Trades"
+_BASE_URL = "https://api.kraken.com/0/public"
+
+
+def _to_utc(ts) -> pd.Timestamp:
+    """Coerce any date/time input to a tz-aware UTC ``Timestamp`` (naive is assumed UTC)."""
+    ts = pd.Timestamp(ts)
+    return ts.tz_localize("UTC") if ts.tz is None else ts.tz_convert("UTC")
+
+
+def _kraken_get(endpoint: str, params: dict) -> dict:
+    """GET a Kraken public ``endpoint`` and return its ``result``, raising on an API error."""
+    resp = requests.get(f"{_BASE_URL}/{endpoint}", params=params, timeout=30).json()
+    if resp.get("error"):
+        raise RuntimeError(f"Kraken {endpoint} error for {params.get('pair')}: {resp['error']}")
+    return resp["result"]
+
+
+def _result_series_key(result: dict) -> str:
+    """The single data key in a Kraken result payload (everything except the ``last`` cursor)."""
+    return next(k for k in result if k != "last")
 
 
 def fetch_trades(pair: str, start_ts: str, end_ts: str, sleep: float = 1.0) -> pd.DataFrame:
@@ -31,12 +54,8 @@ def fetch_trades(pair: str, start_ts: str, end_ts: str, sleep: float = 1.0) -> p
 
     rows = []
     while True:
-        resp = requests.get(_TRADES_URL, params={"pair": pair, "since": since}, timeout=30).json()
-        if resp.get("error"):
-            raise RuntimeError(f"Kraken Trades error for {pair}: {resp['error']}")
-        result = resp["result"]
-        key = next(k for k in result if k != "last")
-        batch = result[key]
+        result = _kraken_get("Trades", {"pair": pair, "since": since})
+        batch = result[_result_series_key(result)]
         if not batch:
             break
         rows.extend(batch)
@@ -69,3 +88,33 @@ def usd_prices_1min(pair: str, start_ts: str, end_ts: str) -> pd.DataFrame:
     print(f"{pair}: {len(trades)} trades -> {len(px)} 1-min bars "
           f"({px.index.min()} -> {px.index.max()})")
     return px.reset_index()
+
+
+def usd_prices_daily(pair: str, days: int = 365, start=None, end=None) -> pd.DataFrame:
+    """Daily close USD price series for a Kraken ``pair`` (OHLC endpoint).
+
+    One OHLC call at the daily interval (1440 min) returns up to ~720 committed candles - about two
+    years - so any 6-12 month lookback comes back in a single request. Returns ``[time, price]`` with
+    a tz-aware UTC daily ``time`` and the daily close as ``price``.
+
+    By default returns the most recent ``days`` days (relative to now). Pass ``start`` and/or ``end``
+    (UTC-parseable) to fetch a **fixed, reproducible** window instead - the way the market-regime
+    notebook should pull, so the classified year does not shift between runs.
+    """
+    start = _to_utc(start) if start is not None else None
+    end = _to_utc(end) if end is not None else None
+    since = int(start.timestamp()) if start is not None \
+        else int((pd.Timestamp.utcnow() - pd.Timedelta(days=days)).timestamp())
+    result = _kraken_get("OHLC", {"pair": pair, "interval": 1440, "since": since})
+    ohlc = pd.DataFrame(result[_result_series_key(result)],
+                        columns=["time", "open", "high", "low", "close", "vwap", "volume", "count"])
+    ohlc["time"] = pd.to_datetime(ohlc["time"].astype(float), unit="s", utc=True)
+    ohlc["price"] = ohlc["close"].astype(float)
+    out = ohlc[["time", "price"]]
+    if start is not None:
+        out = out[out["time"] >= start]
+    if end is not None:
+        out = out[out["time"] <= end]
+    out = out.reset_index(drop=True)
+    print(f"{pair}: {len(out)} daily candles ({out['time'].min().date()} -> {out['time'].max().date()})")
+    return out

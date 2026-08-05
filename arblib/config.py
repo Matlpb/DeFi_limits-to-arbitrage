@@ -11,7 +11,6 @@ the whole study for a different pair or chain is a single edit to :data:`STUDY`.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
 from pathlib import Path
 
 SWAP_QUERY_IDS: dict[str, int] = {
@@ -101,13 +100,13 @@ class Settings:
     chain: str
     base: Token
     quote: Token
-    start_ts: str
-    end_ts: str
-    study_start: str
     max_gap_blocks: int = 6000
     mev_horizon_blocks: int =20
     vol_horizon_min: int = 30
     cex_avg_window_min: int = 60
+    regime_start: str = "2025-07-01"    # market_regime_detection: first day of the classified year
+    regime_end: str = "2026-06-30"      # ... last day (leaves an end-buffer before "now")
+    extract_lead_hours: int = 4         # block-data warm-up lead before a chosen study window
     base_dir: Path = field(default_factory=Path.cwd)
 
     @property
@@ -197,25 +196,14 @@ class Settings:
         return self.data_analysis_dir / "trade_size_quantiles.csv"
 
     @property
-    def cex_start_ts(self) -> str:
-        """Kraken fetch start: ``start_ts`` widened back by ``cex_avg_window_min`` minutes, so
-        the earliest swap already has a full trailing window of past CEX prices to average."""
-        widened = datetime.strptime(self.start_ts, "%Y-%m-%d %H:%M:%S") - timedelta(minutes=self.cex_avg_window_min)
-        return widened.strftime("%Y-%m-%d %H:%M:%S")
-
-    @property
-    def collection_params(self) -> dict[str, str]:
-        return build_collection_params(
-            self.chain, self.base.address, self.quote.address, self.start_ts, self.end_ts
-        )
+    def study_dates_path(self) -> Path:
+        """The three chosen regime windows (low / mid / high) written by market_regime_detection."""
+        return self.data_analysis_dir / "study_dates.csv"
 
 
 STUDY = Settings(
     chain="ethereum",
     base=TOKENS["ethereum"]["WETH"],
     quote=TOKENS["ethereum"]["USDC"],
-    start_ts="2025-12-31 15:00:00",
-    end_ts="2025-12-31 16:00:00",
-    study_start="2025-12-31 15:15:00",
-    mev_horizon_blocks=15,   # ~10 min at 12s/block; renamed + updated value
+    mev_horizon_blocks=15,   # ~10 min at 12s/block
 )

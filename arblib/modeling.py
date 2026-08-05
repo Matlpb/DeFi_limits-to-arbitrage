@@ -1,20 +1,14 @@
 """
-Modeling-ready transformed data + the panel existence logit.
+Feature build - the modeling-ready parquets.
 
-Two halves:
-
-* **Feature build** - turns the arbitrage index into the per-pool-pair dependent variable
-  (continuous gap ``Gap_t(Q)`` and its existence ``D_t(Q) = 1[Gap_t(Q) > 0]``) and the pool-pair
-  and shared covariates, each written to parquet under ``S.modeling_dir``.
-* **Estimation** - reloads those parquets into one pooled panel (:func:`build_panel`), lags the
-  predetermined regressors (:func:`prepare_model_frame`), and fits the pool-pair fixed-effects
-  logit ``Pr(D_{p,t}=1 | X_{p,t-1}) = Lambda(eta_{p,t})`` with cluster-robust SEs
-  (:func:`fit_existence_logit`) and average marginal effects (:func:`average_marginal_effects`).
+Turns the arbitrage index into the per-pool-pair dependent variable (continuous gap ``Gap_t(Q)``
+and its existence ``D_t(Q) = 1[Gap_t(Q) > 0]``) and the pool-pair and shared covariates, each
+written to parquet under ``S.modeling_dir``. The estimation layer that reads these back into a
+pooled panel and fits the models lives in :mod:`arblib.estimation`.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from itertools import combinations
 from pathlib import Path
 
@@ -22,16 +16,6 @@ import numpy as np
 import pandas as pd
 
 from . import formulas
-import statsmodels.formula.api as smf
-
-
-
-
-
-EXISTENCE_TERMS = ["gap_lag", "log_base_fee",  "gas_util_lag", "tip_p90_lag",
-                   "mev_lag", "freq_lag", "log_vol", "dlogL_lag"]
-
-
 
 
 def dependent_variables(arb_index: dict[str, pd.DataFrame],
@@ -164,171 +148,3 @@ def save_pair_covariates(pools: dict[str, pd.DataFrame], out_dir: str | Path) ->
     for pair, df in frames.items():
         df.to_parquet(out_dir / f"{pair}.parquet", index=False)
     print(f"Saved {len(frames)} pool-pair covariate parquets to {out_dir}")
-
-
-##########---------PANEL / ESTIMATION-----------###########
-
-
-def load_parquet_dir(directory: str | Path) -> dict[str, pd.DataFrame]:
-    """Load every ``<name>.parquet`` in ``directory`` into ``{name: frame}`` (sorted by name)."""
-    directory = Path(directory)
-    return {p.stem: pd.read_parquet(p) for p in sorted(directory.glob("*.parquet"))}
-
-
-def build_panel(dep_dir: str | Path, pair_cov_dir: str | Path,
-                chain_cov_path: str | Path, vol_path: str | Path) -> pd.DataFrame:
-    """Assemble the pooled panel: one row per (pool pair, block), contemporaneous covariates.
-
-    Joins, per pool pair, the dependent variable (``dep_dir``) and the pool-pair covariates
-    (``pair_cov_dir``) on the block, stacks all pairs, then attaches the two shared tables:
-    ``chain_covariates`` by exact ``block_number`` and ``CEX_volatility`` by the *no-look-ahead*
-    minute rule - each block takes the EWMA vol of the last fully-closed 1-minute bar strictly
-    before the block's own minute, i.e. ``floor(evt_block_time, 'min') - 1 min``. A 1-minute bar
-    labelled T only closes at T+1min, so a block at 15:15:11 must use the 15:14:00 bar (complete
-    at 15:15:00), a block at 15:16:xx the 15:15:00 bar, and so on. Returns the panel sorted by
-    (``pair``, ``evt_block_number``) with a tz-aware datetime ``evt_block_time`` and a ``vol_minute``
-    audit column; lags are applied later in :func:`prepare_model_frame`.
-    """
-    dv = load_parquet_dir(dep_dir)
-    pc = load_parquet_dir(pair_cov_dir)
-
-    frames = []
-    for pair, d in dv.items():
-        d = d.rename(columns={"blocknumber": "evt_block_number"})
-        merged = d.merge(pc[pair].drop(columns=["evt_block_time"]), on="evt_block_number")
-        merged.insert(0, "pair", pair)
-        frames.append(merged)
-    panel = pd.concat(frames, ignore_index=True)
-    panel["evt_block_time"] = pd.to_datetime(panel["evt_block_time"], utc=True)
-
-    chain = pd.read_parquet(chain_cov_path).drop(columns=["time"])
-    panel = panel.merge(chain, left_on="evt_block_number", right_on="block_number",
-                        how="left").drop(columns=["block_number"])
-
-    vol = pd.read_parquet(vol_path).rename(columns={"time": "vol_minute"})
-    panel["vol_minute"] = panel["evt_block_time"].dt.floor("min") - pd.Timedelta(minutes=1)
-    panel = panel.merge(vol, on="vol_minute", how="left")
-
-    return panel.sort_values(["pair", "evt_block_number"]).reset_index(drop=True)
-
-
-def prepare_model_frame(panel: pd.DataFrame, quantile: float,
-                        drop_constant_pairs: bool = True) -> pd.DataFrame:
-    """Build the model-ready frame for one trade-size quantile: outcome ``D_t`` and predetermined ``X``.
-
-    Lags the pair-specific and ``t-1`` chain regressors by one block *within* each pool pair (so no
-    value leaks across pairs), while keeping ``log(base_fee)`` and ``log(ewma_vol)`` contemporaneous
-    at ``t`` exactly as the equation's subscripts specify (the vol is already backward-looking via
-    the minute rule in :func:`build_panel`). Derives hour / day-of-week / iso-week from the block
-    time for the calendar fixed effects. Rows with any missing lag are dropped: the first block of
-    every pair (all lags), and the second block for ``dlogL_lag`` (its growth needs ``L_{t-2}``).
-    With ``drop_constant_pairs`` (default) pool pairs whose ``D`` never varies in-sample are removed
-    - under pair fixed effects they are uninformative and would cause perfect separation.
-
-    Columns: ``pair, evt_block_number, evt_block_time, D, gap_lag, log_base_fee, gas_util_lag,
-    tip_p90_lag, mev_lag, freq_lag, log_vol, dlogL_lag, hour, dow, week``.
-    """
-    q = f"q{int(round(quantile * 100))}"
-    g = panel.groupby("pair", sort=False)
-    out = pd.DataFrame({
-        "pair": panel["pair"],
-        "evt_block_number": panel["evt_block_number"],
-        "evt_block_time": panel["evt_block_time"],
-        "D": panel[f"D_{q}"].astype(float),
-        "gap_lag": g[f"gap_{q}"].shift(1),
-        "log_base_fee": panel["log_base_fee_per_gas"],
-        "gas_util_lag": g["gas_util"].shift(1),
-        "tip_p90_lag": g["log1p_tip_p90"].shift(1),
-        "mev_lag": g["mev_intensity"].shift(1),
-        "freq_lag": g["frequency_intensity"].shift(1),
-        "log_vol": np.log(panel["ewma_vol"]),
-
-        "dlogL_lag": g["per_log_liquidity_growth_rate_avg_venue"].shift(1),
-    })
-    out["hour"] = out["evt_block_time"].dt.hour
-    out["dow"] = out["evt_block_time"].dt.dayofweek
-    out["week"] = out["evt_block_time"].dt.isocalendar().week.astype(int)
-    out = out.dropna().reset_index(drop=True)
-
-    if drop_constant_pairs:
-        varies = out.groupby("pair")["D"].transform("nunique") > 1
-        dropped = sorted(set(out.loc[~varies, "pair"]))
-        if dropped:
-            print(f"q{q[1:]}: dropping {len(dropped)} pool pairs with no D variation "
-                  f"(uninformative under pair FE): {dropped}")
-        out = out.loc[varies].reset_index(drop=True)
-
-    return out
-
-def build_risk_set(panel: pd.DataFrame, quantile: float, condition: str) -> pd.DataFrame:
-    """Build a model-ready frame restricted to one existence-equation risk set.
-
-    ``condition`` selects the hazard: ``"closure"`` keeps ``gap_lag > 0`` (given a gap is
-    open, does it survive?), ``"onset"`` keeps ``gap_lag == 0`` (given no gap is open, does
-    one appear?). After filtering, re-checks for pool pairs with no ``D`` variation *within
-    this specific subsample* (a pair can vary in the full panel yet be constant once
-    restricted) and drops them, since they are uninformative and would cause separation
-    under pair fixed effects.
-    """
-    df = prepare_model_frame(panel, quantile=quantile)
-    df = df.loc[df.gap_lag > 0] if condition == "closure" else df.loc[df.gap_lag == 0]
-    df = df.reset_index(drop=True)
-
-    varies = df.groupby("pair")["D"].transform("nunique") > 1
-    dropped = sorted(set(df.loc[~varies, "pair"]))
-    if dropped:
-        print(f"{condition}: dropping {len(dropped)} pairs with no D variation: {dropped}")
-    df = df.loc[varies].reset_index(drop=True)
-
-    print(f"{condition}: {df.shape} | D mean: {round(df.D.mean(), 4)} | pairs: {df.pair.nunique()}")
-    return df
-
-
-def fit_hazard_logit(model_df: pd.DataFrame, terms: Sequence[str],
-                      cluster: str | Sequence[str] = "pair", maxiter: int = 300,
-                      direction: str = "logit"):
-    """Fit a pooled hazard logit (existence-stage, either risk set) with pool-pair (and,
-    when identified, calendar) fixed effects.
-
-    Regresses ``D`` on the supplied ``terms`` plus ``C(pair)`` fixed effects, adding
-    ``C(hour)`` / ``C(dow)`` / ``C(week)`` only when the sample spans more than one level.
-    Used for both the closure hazard (risk set: gap_lag > 0, terms include gap_lag) and the
-    onset hazard (risk set: gap_lag == 0, terms exclude gap_lag - it is constant at 0 on
-    this subsample and would be collinear with the intercept). Standard errors are
-    cluster-robust: cluster="pair" for one-way, cluster=["pair","evt_block_number"] for the
-    two-way (pair x block) robustness check.
-    """
-
-    all_terms = list(terms) + ["C(pair)"]
-    for fe, col in [("C(hour)", "hour"), ("C(dow)", "dow"), ("C(week)", "week")]:
-        if model_df[col].nunique() > 1:
-            all_terms.append(fe)
-    formula = "D ~ " + " + ".join(all_terms)
-
-    cols = [cluster] if isinstance(cluster, str) else list(cluster)
-    codes = np.column_stack([pd.factorize(model_df[c])[0] for c in cols])
-    groups = codes[:, 0] if len(cols) == 1 else codes
-
-    if direction == "probit":
-        return smf.probit(formula, data=model_df).fit(
-            cov_type="cluster", cov_kwds={"groups": groups}, maxiter=maxiter, disp=False)
-
-    if direction == "logit":
-        return smf.logit(formula, data=model_df).fit(
-            cov_type="cluster", cov_kwds={"groups": groups}, maxiter=maxiter, disp=False)
-
-    raise ValueError(f"Unknown direction: {direction!r}")
-
-
-
-def average_marginal_effects(result, terms: Sequence[str] | None = None) -> pd.DataFrame:
-    """Average marginal effects (``AME = mean_i dPr(D=1)/dX_k``) with the fitted (clustered) SEs.
-
-    Raw logit coefficients are not probability changes, so report AME - the sample average of the
-    per-observation marginal effect (``at="overall"``). Returns the tidy ``summary_frame`` of
-    ``result.get_margeff``; if ``terms`` is given (e.g. :data:`EXISTENCE_TERMS`), restricts to those
-    regressors, dropping the fixed-effect dummies."""
-    frame = result.get_margeff(at="overall").summary_frame()
-    if terms is not None:
-        frame = frame.loc[[t for t in terms if t in frame.index]]
-    return frame
