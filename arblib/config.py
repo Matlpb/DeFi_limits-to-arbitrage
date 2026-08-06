@@ -106,7 +106,11 @@ class Settings:
     cex_avg_window_min: int = 60
     regime_start: str = "2025-07-01"    # market_regime_detection: first day of the classified year
     regime_end: str = "2026-06-30"      # ... last day (leaves an end-buffer before "now")
+    regime_buffer_days: int = 75        # EWMA warm-up lead before the classified year
+    regime_window_days: int = 6         # length of each regime study window (days)
     extract_lead_hours: int = 4         # block-data warm-up lead before a chosen study window
+    active_regime: str = "high"         # which window extract / transform operate on: low | mid | high
+    reference_quantiles: tuple[float, ...] = (0.2, 0.4, 0.6, 0.8)   # trade-size reference quantiles
     base_dir: Path = field(default_factory=Path.cwd)
 
     @property
