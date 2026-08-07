@@ -20,7 +20,7 @@ import pandas as pd
 
 from . import formulas
 
-_INFO_COLS = ["evt_tx_hash", "dex", "pool", "evt_block_number", "hour"]
+_INFO_COLS = ["dex", "pool", "evt_block_number", "hour"]
 
 
 def pooled_swaps(dfs: dict[str, pd.DataFrame]) -> pd.DataFrame:

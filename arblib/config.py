@@ -110,6 +110,10 @@ class Settings:
     regime_window_days: int = 6         # length of each regime study window (days)
     extract_lead_hours: int = 4         # block-data warm-up lead before a chosen study window
     active_regime: str = "high"         # which window extract / transform operate on: low | mid | high
+    test_mode: bool = False             # extract an explicit custom window instead of the regime window
+    test_start: str | None = None       # "YYYY-MM-DD HH:MM:SS" UTC; used only when test_mode
+    test_end: str | None = None         # "YYYY-MM-DD HH:MM:SS" UTC; used only when test_mode
+    test_lead_min: int = 15             # test-mode warm-up: the study starts test_start + this many minutes
     reference_quantiles: tuple[float, ...] = (0.2, 0.4, 0.6, 0.8)   # trade-size reference quantiles
     base_dir: Path = field(default_factory=Path.cwd)
 
@@ -210,4 +214,7 @@ STUDY = Settings(
     base=TOKENS["ethereum"]["WETH"],
     quote=TOKENS["ethereum"]["USDC"],
     mev_horizon_blocks=15,   # ~10 min at 12s/block
+    test_mode=True,                       # TEST: extract the custom window below; set False for the real regime run
+    test_start="2025-12-31 10:00:00",     # UTC
+    test_end="2025-12-31 11:00:00",       # UTC
 )

@@ -15,6 +15,7 @@ sizing        : USD trade-size distribution and reference quantiles
 arbitrage     : executable prices + per-pool-pair arbitrage index (PoolPair)
 modeling      : feature build - dependent variable + covariates -> parquet
 estimation    : panel assembly + the block-level / spell-level models
+naming        : shared quantile-suffix / pool-pair naming + iteration conventions
 plotting      : price, trade-size, and round-trip spread plots
 """
 
@@ -28,6 +29,7 @@ from . import (
     formulas,
     kraken_api,
     modeling,
+    naming,
     plotting,
     preprocessing,
     regime,
@@ -44,6 +46,7 @@ __all__ = [
     "formulas",
     "kraken_api",
     "modeling",
+    "naming",
     "plotting",
     "preprocessing",
     "regime",

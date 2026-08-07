@@ -9,13 +9,12 @@ pooled panel and fits the models lives in :mod:`arblib.estimation`.
 
 from __future__ import annotations
 
-from itertools import combinations
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from . import formulas
+from . import data_io, formulas, naming
 
 
 def dependent_variables(arb_index: dict[str, pd.DataFrame],
@@ -35,7 +34,7 @@ def dependent_variables(arb_index: dict[str, pd.DataFrame],
 
     out = {}
     for pair, frame in arb_index.items():
-        gap_cols = {q: f"gap_q{int(round(q * 100))}" for q in frame.columns}
+        gap_cols = {q: f"gap_{naming.qlabel(q)}" for q in frame.columns}
         df = frame.rename(columns=gap_cols).reset_index().rename(columns={"block": "blocknumber"})
         df["evt_block_time"] = df["blocknumber"].map(block_time)
         for name in gap_cols.values():
@@ -50,12 +49,7 @@ def dependent_variables(arb_index: dict[str, pd.DataFrame],
 def save_dependent_variables(arb_index: dict[str, pd.DataFrame],
                              pools: dict[str, pd.DataFrame], out_dir: str | Path) -> None:
     """Write one dependent-variable parquet per pool pair to ``out_dir`` (:func:`dependent_variables`)."""
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    frames = dependent_variables(arb_index, pools)
-    for pair, df in frames.items():
-        df.to_parquet(out_dir / f"{pair}.parquet", index=False)
-    print(f"Saved {len(frames)} dependent-variable parquets to {out_dir}")
+    data_io.save_frames(dependent_variables(arb_index, pools), out_dir, label="dependent-variable")
 
 
 def cex_volatility(x_usd: pd.DataFrame, y_usd: pd.DataFrame, horizon_min: int) -> pd.DataFrame:
@@ -125,9 +119,9 @@ def pair_covariates(pools: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
       ``mean_dlog_L_{p,t-1}``.
     """
     out = {}
-    for n1, n2 in combinations(pools, 2):
+    for name, n1, n2 in naming.iter_pairs(pools):
         m = pools[n1].merge(pools[n2], on="evt_block_number", suffixes=("_1", "_2"))
-        out[f"{n1}_vs_{n2}"] = pd.DataFrame({
+        out[name] = pd.DataFrame({
             "evt_block_number": m["evt_block_number"],
             "evt_block_time": m["evt_block_time_1"],
             "mev_intensity": 0.5 * (np.log1p(m["mev_intensity_1"].astype(float))
@@ -142,9 +136,4 @@ def pair_covariates(pools: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
 
 def save_pair_covariates(pools: dict[str, pd.DataFrame], out_dir: str | Path) -> None:
     """Write one pool-pair covariate parquet per pair to ``out_dir`` (:func:`pair_covariates`)."""
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    frames = pair_covariates(pools)
-    for pair, df in frames.items():
-        df.to_parquet(out_dir / f"{pair}.parquet", index=False)
-    print(f"Saved {len(frames)} pool-pair covariate parquets to {out_dir}")
+    data_io.save_frames(pair_covariates(pools), out_dir, label="pool-pair covariate")

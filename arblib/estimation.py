@@ -23,6 +23,8 @@ from statsmodels.stats.outliers_influence import variance_inflation_factor
 import statsmodels.api as sm
 from linearmodels.panel import PanelOLS
 
+from . import naming
+
 
 # Regressor sets, shared by the notebooks so every specification reads from one place.
 EXISTENCE_TERMS = ["gap_lag", "log_base_fee", "gas_util_lag", "tip_p90_lag",
@@ -144,7 +146,7 @@ def prepare_model_frame(panel: pd.DataFrame, quantile: float,
     varies in-sample are removed - uninformative under pair fixed effects and a source of
     separation.
     """
-    q = f"q{int(round(quantile * 100))}"
+    q = naming.qlabel(quantile)
     g = panel.groupby("pair", sort=False)
     out = pd.DataFrame({
         "pair": panel["pair"],
@@ -221,7 +223,7 @@ def build_risk_set(panel: pd.DataFrame, quantile: float, condition: str,
 
     Pairs that can't support a pair fixed effect on ``D`` in the risk set are then dropped.
     """
-    q = f"q{int(round(quantile * 100))}"
+    q = naming.qlabel(quantile)
     df = prepare_model_frame(panel, quantile=quantile)
     if condition == "closure":
         # at-risk spell = the spell open at t-1; taken from the full panel (block t-1 is always
@@ -254,7 +256,7 @@ def build_magnitude_sample(panel: pd.DataFrame, quantile: float,
     cluster key for the within-spell two-way robustness. Pairs with fewer than ``min_obs_per_pair``
     rows are dropped (a pair FE off a handful of points is not worth keeping).
     """
-    q = f"q{int(round(quantile * 100))}"
+    q = naming.qlabel(quantile)
     df = prepare_model_frame(panel, quantile=quantile)
     gap_t = panel[["pair", "evt_block_number", f"gap_{q}"]].rename(columns={f"gap_{q}": "gap_t"})
     df = df.merge(gap_t, on=["pair", "evt_block_number"], how="left")
@@ -289,7 +291,7 @@ def build_spell_table(panel: pd.DataFrame, quantile: float) -> pd.DataFrame:
     Descriptive (no fixed effects, no pair screening), so it keeps every spell across all pairs -
     unlike the FE closure hazard, which drops pairs with no within-pair ``D`` variation.
     """
-    q = f"q{int(round(quantile * 100))}"
+    q = naming.qlabel(quantile)
     id_col, dur_col = f"spell_id_{q}", f"spell_duration_{q}"
     pair_first = panel.groupby("pair")["evt_block_number"].min()
     pair_last = panel.groupby("pair")["evt_block_number"].max()
@@ -334,7 +336,7 @@ def build_survival_sample(panel: pd.DataFrame, quantile: float,
     predates the window) are dropped by default; a handful more may drop if their pre-onset ``dlogL``
     is undefined (onset one block after the pair's first).
     """
-    q = f"q{int(round(quantile * 100))}"
+    q = naming.qlabel(quantile)
     tbl = build_spell_table(panel, quantile).rename(columns={"observed": "event"})
 
     onset_id = panel[["pair", "evt_block_number", f"spell_id_{q}"]].rename(

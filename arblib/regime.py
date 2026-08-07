@@ -262,13 +262,14 @@ def study_window(settings, regime_label: str) -> dict:
     """Block-level extraction spec for one chosen regime window (read from ``settings.study_dates_path``).
 
     Loads the ``regime_label`` row saved by :func:`save_study_windows` and returns the timestamps the
-    extract pipeline needs. The study period is the full 7 days ``[win_start, win_end + 1 day)``;
+    extract pipeline needs. The study period is the full window ``[win_start, win_end + 1 day)``;
     extraction starts ``settings.extract_lead_hours`` earlier - a warm-up lead so on-chain price /
     liquidity are already live and the block-level MEV / frequency EWMAs have converged by the first
     study block (``study_start``). ``cex_start_ts`` widens the Kraken 1-minute fetch a further
     ``cex_avg_window_min`` for the trailing USD-price average. Returns
     ``{regime, start_ts, study_start, end_ts, cex_start_ts, collection_params}`` (timestamps as
-    ``"%Y-%m-%d %H:%M:%S"`` UTC, matching the Dune saved-query parameters).
+    ``"%Y-%m-%d %H:%M:%S"`` UTC, matching the Dune saved-query parameters). For a cheap smoke
+    test on an explicit window (independent of the regime dates), see :func:`custom_window`.
     """
     rows = pd.read_csv(settings.study_dates_path)
     hit = rows.loc[rows["regime"] == regime_label]
@@ -293,4 +294,37 @@ def study_window(settings, regime_label: str) -> dict:
         "collection_params": build_collection_params(
             settings.chain, settings.base.address, settings.quote.address,
             extract_start.strftime(fmt), end.strftime(fmt)),
+    }
+
+
+def custom_window(settings, start: str | None, end: str | None) -> dict:
+    """Extraction spec for an explicit ``[start, end)`` window, independent of the regime dates.
+
+    Used for a cheap smoke test (``settings.test_mode`` with ``settings.test_start`` /
+    ``settings.test_end``): it bypasses ``study_dates.csv`` entirely and extracts exactly the given
+    window ``[start, end)``. Extraction starts at ``start``; the study (the part kept by
+    ``transform``) starts ``settings.test_lead_min`` minutes later, so the first study block has a
+    short warm-up - the in-window analogue of the real mode's ``extract_lead_hours`` before the
+    regime window. The Kraken fetch is widened by ``cex_avg_window_min`` for the trailing USD-price
+    average. ``start`` / ``end`` are ``"YYYY-MM-DD HH:MM:SS"`` UTC strings; the returned dict has the
+    same keys as :func:`study_window` so the extract / transform notebooks are unchanged.
+    """
+    if start is None or end is None:
+        raise ValueError("custom_window needs test_start and test_end (set them when test_mode=True)")
+
+    fmt = "%Y-%m-%d %H:%M:%S"
+    start_ts = pd.Timestamp(start, tz="UTC")
+    end_ts = pd.Timestamp(end, tz="UTC")
+    study_start = start_ts + pd.Timedelta(minutes=settings.test_lead_min)
+    cex_start = start_ts - pd.Timedelta(minutes=settings.cex_avg_window_min)
+
+    return {
+        "regime": "test",
+        "start_ts": start_ts.strftime(fmt),
+        "study_start": study_start.strftime(fmt),
+        "end_ts": end_ts.strftime(fmt),
+        "cex_start_ts": cex_start.strftime(fmt),
+        "collection_params": build_collection_params(
+            settings.chain, settings.base.address, settings.quote.address,
+            start_ts.strftime(fmt), end_ts.strftime(fmt)),
     }

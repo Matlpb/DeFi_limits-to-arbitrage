@@ -20,16 +20,17 @@ Everything is expressed for one ordered pool pair, bundled in :class:`PoolPair`:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import combinations
 
 import numpy as np
 import pandas as pd
 
-from . import formulas
+from . import formulas, naming
 from .config import Token
 
 _KEEP1 = ["evt_block_number", "evt_block_time", "sqrtPriceX96", "liquidity"]
 _KEEP2 = ["evt_block_number", "sqrtPriceX96", "liquidity"]
+_BPS = 1e4          # basis points per unit fraction (a spread of 1.0 = 10_000 bps)
+_RAW_FEE_PER_BPS = 100   # raw pool fee field is in hundredths of a bp (100 = 0.01% = 1 bp)
 
 
 @dataclass
@@ -107,25 +108,26 @@ def directional_spreads(pair: PoolPair, Q: float) -> tuple:
     sqrtP1, L1, fee1 = pair.sqrtP1, pair.L1, pair.fee1
     sqrtP2, L2, fee2 = pair.sqrtP2, pair.L2, pair.fee2
     d0, d1 = pair.d0, pair.d1
+    fee1_bps, fee2_bps = fee1 / _RAW_FEE_PER_BPS, fee2 / _RAW_FEE_PER_BPS
 
     swap_out = formulas.swap_out
     x_in = formulas.to_usd(Q, pair.price0, sense="to_token")
     y_in = formulas.to_usd(Q, pair.price1, sense="to_token")
 
-    x_1out = swap_out(sqrtP1, L1, y_in, fee1 / 100, d0, d1, side="buy_x")
-    y_2out = swap_out(sqrtP2, L2, x_1out, fee2 / 100, d0, d1, side="buy_y")
+    x_1out = swap_out(sqrtP1, L1, y_in, fee1_bps, d0, d1, side="buy_x")
+    y_2out = swap_out(sqrtP2, L2, x_1out, fee2_bps, d0, d1, side="buy_y")
     S_12_Y = np.log(y_in) - np.log(y_2out)
 
-    y_1out = swap_out(sqrtP1, L1, x_in, fee1 / 100, d0, d1, side="buy_y")
-    x_2out = swap_out(sqrtP2, L2, y_1out, fee2 / 100, d0, d1, side="buy_x")
+    y_1out = swap_out(sqrtP1, L1, x_in, fee1_bps, d0, d1, side="buy_y")
+    x_2out = swap_out(sqrtP2, L2, y_1out, fee2_bps, d0, d1, side="buy_x")
     S_12_X = np.log(x_2out) - np.log(x_in)
 
-    x_2out_first = swap_out(sqrtP2, L2, y_in, fee2 / 100, d0, d1, side="buy_x")
-    y_1out_second = swap_out(sqrtP1, L1, x_2out_first, fee1 / 100, d0, d1, side="buy_y")
+    x_2out_first = swap_out(sqrtP2, L2, y_in, fee2_bps, d0, d1, side="buy_x")
+    y_1out_second = swap_out(sqrtP1, L1, x_2out_first, fee1_bps, d0, d1, side="buy_y")
     S_21_Y = np.log(y_in) - np.log(y_1out_second)
 
-    y_2out_first = swap_out(sqrtP2, L2, x_in, fee2 / 100, d0, d1, side="buy_y")
-    x_1out_second = swap_out(sqrtP1, L1, y_2out_first, fee1 / 100, d0, d1, side="buy_x")
+    y_2out_first = swap_out(sqrtP2, L2, x_in, fee2_bps, d0, d1, side="buy_y")
+    x_1out_second = swap_out(sqrtP1, L1, y_2out_first, fee1_bps, d0, d1, side="buy_x")
     S_21_X = np.log(x_1out_second) - np.log(x_in)
 
     return x_in, y_in, S_12_Y, S_12_X, S_21_Y, S_21_X
@@ -181,9 +183,9 @@ def arbitrage_index(pair: PoolPair, quantiles: pd.Series) -> pd.DataFrame:
             "usd_ref": float(Q),
             "n_blocks": int(gap.size),
             "live_gap_share": float((gap > 0).mean()),
-            "mean_gap_bps": float(gap.mean() * 1e4),
-            "median_gap_bps": float(np.median(gap) * 1e4),
-            "max_gap_bps": float(gap.max() * 1e4),
+            "mean_gap_bps": float(gap.mean() * _BPS),
+            "median_gap_bps": float(np.median(gap) * _BPS),
+            "max_gap_bps": float(gap.max() * _BPS),
             "anchor_agreement": float(r["anchor_agrees"].mean()),
         })
     return pd.DataFrame(rows, index=pd.Index(quantiles.index, name="quantile"))
@@ -196,7 +198,7 @@ def gap_index_frame(pair: PoolPair, quantiles: pd.Series) -> pd.DataFrame:
     the arbitrage-index *time series* for the pair, of which :func:`arbitrage_index` is
     the cross-block summary.
     """
-    data = {label: gap_series(pair, Q)["Gap_t"] * 1e4 for label, Q in quantiles.items()}
+    data = {label: gap_series(pair, Q)["Gap_t"] * _BPS for label, Q in quantiles.items()}
     return pd.DataFrame(data, index=pd.Index(pair.block, name="block"))
 
 
@@ -211,9 +213,9 @@ def all_pairs_gap_series(pools: dict[str, pd.DataFrame], quantiles: pd.Series,
     ``{"<poolA>_vs_<poolB>": frame}``, the per-pair signal a downstream model stacks.
     """
     out = {}
-    for n1, n2 in combinations(pools, 2):
+    for name, n1, n2 in naming.iter_pairs(pools):
         pair = build_pool_pair(pools[n1], pools[n2], token0, token1, price0, price1, n1, n2)
-        out[f"{n1}_vs_{n2}"] = gap_index_frame(pair, quantiles)
+        out[name] = gap_index_frame(pair, quantiles)
     return out
 
 

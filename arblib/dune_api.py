@@ -6,8 +6,9 @@ The flow for a saved query is always the same:
     execute  ->  poll status until COMPLETED  ->  fetch result rows
 
 :func:`run_dune_saved_query` chains those three steps and returns a tidy
-``DataFrame`` (empty if the query is not available for the requested chain or
-if it fails).
+``DataFrame`` (empty if the query is not available for the requested chain or if
+it fails). Large results are paged through, with rate-limit backoff, by
+:func:`fetch_results`.
 """
 
 from __future__ import annotations
@@ -112,16 +113,69 @@ def wait_for_execution(execution_id: str, headers: dict[str, str], label: str = 
         time.sleep(sleep)
 
 
-def fetch_results(execution_id: str, headers: dict[str, str], label: str = "") -> pd.DataFrame:
-    """Download the result rows of a completed execution as a ``DataFrame``.
+def _paginate_result_rows(url: str, headers: dict[str, str], label: str,
+                          page_size: int, sleep: float = 1.0,
+                          max_retries: int = 5) -> list[dict]:
+    """Page through a Dune results URL and return **every** row.
+
+    Requests ``page_size`` rows at a time and follows Dune's ``next_offset``
+    until the result is exhausted, because a single un-paginated GET of a large
+    result (tens of MB / millions of cells) is refused by the API and would
+    otherwise silently come back empty.
+
+    Between pages it pauses ``sleep`` seconds, and when a page is rate-limited
+    (HTTP 429 "Too many requests", common on the free plan for large results) it
+    honours ``Retry-After`` / backs off exponentially and retries up to
+    ``max_retries`` times. If a page still cannot be fetched it **raises** rather
+    than returning a truncated result, so the caller never saves a partial swap
+    set (which would corrupt block-by-block pool reconstruction).
+    """
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        for attempt in range(max_retries + 1):
+            resp = requests.get(
+                url, headers=headers, params={"limit": page_size, "offset": offset}
+            )
+            body = resp.json()
+            if "result" in body:
+                break
+
+            reason = body.get("error", body)
+            retryable = resp.status_code in (429, 500, 502, 503, 504)
+            if retryable and attempt < max_retries:
+                wait = float(resp.headers.get("Retry-After", sleep * 3 * (2 ** attempt)))
+                print(f"[{label}] rate-limited at offset={offset} "
+                      f"(attempt {attempt + 1}/{max_retries}); retrying in {wait:.0f}s — {reason}")
+                time.sleep(wait)
+                continue
+
+            raise RuntimeError(
+                f"{label}: results download failed at offset={offset} "
+                f"(HTTP {resp.status_code}) after {attempt} retries — {reason}. "
+                f"Fetched {len(rows)} rows so far; refusing to save a partial result. "
+                f"Reduce the query's columns/rows or wait for the rate limit to reset."
+            )
+
+        page = body["result"].get("rows", [])
+        rows.extend(page)
+
+        next_offset = body.get("next_offset")
+        if not page or next_offset is None:
+            break
+        offset = next_offset
+        time.sleep(sleep)
+
+    return rows
+
+
+def _tidy_results(rows: list[dict], label: str) -> pd.DataFrame:
+    """Turn Dune result rows into a clean ``DataFrame``.
 
     Dune sometimes returns space-padded column names and string values; they are
     stripped here so the saved CSVs are clean and merges on keys like
     ``evt_tx_hash`` / ``pool`` match across queries.
     """
-    url = f"{BASE_URL}/execution/{execution_id}/results"
-
-    rows = requests.get(url, headers=headers).json().get("result", {}).get("rows", [])
     df = pd.DataFrame(rows)
 
     if df.empty:
@@ -135,13 +189,20 @@ def fetch_results(execution_id: str, headers: dict[str, str], label: str = "") -
     return df
 
 
+def fetch_results(execution_id: str, headers: dict[str, str], label: str = "",
+                  page_size: int = 10_000) -> pd.DataFrame:
+    """Download the result rows of a completed execution as a ``DataFrame``."""
+    url = f"{BASE_URL}/execution/{execution_id}/results"
+    return _tidy_results(_paginate_result_rows(url, headers, label, page_size), label)
+
+
 def run_dune_saved_query(query_id: int, params: dict[str, str], headers: dict[str, str],
                          label: str = "", max_wait: float | None = None) -> pd.DataFrame:
     """Run a saved query end-to-end (execute -> wait -> fetch).
 
-    Returns an empty ``DataFrame`` if the query is unavailable, fails, or does
-    not finish within ``max_wait`` seconds, so the caller can keep going for the
-    other DEXes.
+    Returns an empty ``DataFrame`` if the query is unavailable, fails, or does not
+    finish within ``max_wait`` seconds, so the caller can keep going for the other
+    DEXes.
     """
     execution_id = execute_query(query_id, params, headers, label)
     if execution_id is None:

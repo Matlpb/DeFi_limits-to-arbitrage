@@ -46,6 +46,24 @@ def save_processed_pools(pool_dfs: dict[str, pd.DataFrame], save_dir: str | Path
     print("Done.")
 
 
+def save_frames(frames: dict[str, pd.DataFrame], out_dir: str | Path,
+                suffix: str = "parquet", label: str | None = None) -> None:
+    """Write each frame in ``{name: df}`` to ``out_dir/<name>.<suffix>`` (parquet or csv).
+
+    The one place the "one file per key" save loop lives, reused by the modeling feature build.
+    ``label`` only tunes the summary message (e.g. ``"dependent-variable"``).
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for name, df in frames.items():
+        path = out_dir / f"{name}.{suffix}"
+        if suffix == "parquet":
+            df.to_parquet(path, index=False)
+        else:
+            df.to_csv(path, index=False)
+    print(f"Saved {len(frames)} {label + ' ' if label else ''}{suffix} files to {out_dir}")
+
+
 def load_pool_csvs(data_dir: str | Path, files: dict[str, str] | None = None) -> dict[str, pd.DataFrame]:
     """Load the per-DEX CSVs found in ``data_dir`` into ``{key: df}``.
 
