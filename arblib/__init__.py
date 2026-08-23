@@ -17,6 +17,8 @@ modeling      : feature build - dependent variable + covariates -> parquet
 estimation    : panel assembly + the block-level / spell-level models
 naming        : shared quantile-suffix / pool-pair naming + iteration conventions
 plotting      : price, trade-size, and round-trip spread plots
+summary       : cross-regime descriptive summary-statistics tables
+reporting     : cross-regime onset / closure / magnitude coefficient tables
 """
 
 from . import (
@@ -33,7 +35,9 @@ from . import (
     plotting,
     preprocessing,
     regime,
+    reporting,
     sizing,
+    summary,
 )
 
 __all__ = [
@@ -50,5 +54,7 @@ __all__ = [
     "plotting",
     "preprocessing",
     "regime",
+    "reporting",
     "sizing",
+    "summary",
 ]

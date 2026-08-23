@@ -28,15 +28,15 @@ from . import naming
 
 # Regressor sets, shared by the notebooks so every specification reads from one place.
 EXISTENCE_TERMS = ["gap_lag", "log_base_fee", "gas_util_lag", "tip_p90_lag",
-                   "mev_lag", "freq_lag", "log_vol", "dlogL_lag"]
+                   "mev_lag", "freq_lag", "log_vol"]
 ONSET_TERMS = [t for t in EXISTENCE_TERMS if t != "gap_lag"]   # gap_lag == 0 on the onset risk set
-CLOSURE_TERMS = list(EXISTENCE_TERMS)                          # closure hazard on the gap_lag > 0 set
+CLOSURE_TERMS = ["log1p_gap_lag", *ONSET_TERMS]                # closure hazard on gap_lag > 0; open-gap size in logs
 CLOSURE_DURATION_TERMS = CLOSURE_TERMS + ["spell_duration"]    # + elapsed spell age (Wooldridge Ch. 20)
 MAGNITUDE_TERMS = ["log1p_gap_lag", "log_base_fee", "gas_util_lag", "tip_p90_lag",
-                   "mev_lag", "freq_lag", "log_vol", "dlogL_lag"]
+                   "mev_lag", "freq_lag", "log_vol"]
 # Spell-level survival baseline (Cox / AFT). No spell_duration: it is the outcome / time axis, not a
 # regressor (that role is the discrete-time hazard logit's). Measured pre-onset - see build_survival_sample.
-SURVIVAL_TERMS = ["log_base_fee", "gas_util", "tip_p90", "mev_intensity", "freq", "log_vol", "dlogL"]
+SURVIVAL_TERMS = ["log_base_fee", "gas_util", "tip_p90", "mev_intensity", "freq", "log_vol"]
 
 
 ##########---------PANEL ASSEMBLY-----------###########
@@ -132,7 +132,9 @@ def prepare_model_frame(panel: pd.DataFrame, quantile: float,
     Lags the pair-specific and ``t-1`` chain regressors by one block *within* each pool pair (so no
     value leaks across pairs), keeps ``log(base_fee)`` and ``log(ewma_vol)`` contemporaneous at
     ``t`` (the vol is already backward-looking via the minute rule in :func:`build_panel`), and
-    derives hour / day-of-week / iso-week for the calendar fixed effects. Also carries, from the
+    derives the hour-of-day for the time-of-day fixed effect (day-of-week and iso-week are omitted as
+    near-collinear and low-signal on a sub-week window), and forms ``log1p_gap_lag`` (the open-gap
+    size in logs) for the closure and magnitude equations. Also carries, from the
     canonical spell columns:
 
     * ``spell_duration`` - the predetermined spell age (contemporaneous age lagged one block; 0 when
@@ -141,8 +143,8 @@ def prepare_model_frame(panel: pd.DataFrame, quantile: float,
       spell), the cluster key for the within-spell two-way SE. :func:`build_risk_set` re-lags this
       to the at-risk spell for the closure set.
 
-    Rows with any missing lag are dropped (the first block of every pair, and the second for the
-    liquidity-growth lag). With ``drop_constant_pairs`` (default) pool pairs whose ``D`` never
+    Rows with any missing lag are dropped (the first block of every pair). With
+    ``drop_constant_pairs`` (default) pool pairs whose ``D`` never
     varies in-sample are removed - uninformative under pair fixed effects and a source of
     separation.
     """
@@ -160,12 +162,10 @@ def prepare_model_frame(panel: pd.DataFrame, quantile: float,
         "mev_lag": g["mev_intensity"].shift(1),
         "freq_lag": g["frequency_intensity"].shift(1),
         "log_vol": np.log(panel["ewma_vol"]),
-        "dlogL_lag": g["per_log_liquidity_growth_rate_avg_venue"].shift(1),
         "spell_duration": g[f"spell_duration_{q}"].shift(1),
     })
+    out["log1p_gap_lag"] = np.log1p(out["gap_lag"])   # open-gap size in logs (closure / magnitude regressor)
     out["hour"] = out["evt_block_time"].dt.hour
-    out["dow"] = out["evt_block_time"].dt.dayofweek
-    out["week"] = out["evt_block_time"].dt.isocalendar().week.astype(int)
     out = out.dropna().reset_index(drop=True)
 
     # contemporaneous spell membership, merged AFTER dropna so its nulls (closed blocks) don't wipe
@@ -204,6 +204,32 @@ def drop_uninformative_pairs(df: pd.DataFrame, outcome_col: str, min_obs: int,
     if dropped:
         print(f"{label}: dropping {len(dropped)} pairs: {dropped}")
     return df.loc[keep].reset_index(drop=True)
+
+
+def drop_pairs_by_event_floor(df: pd.DataFrame, floor: int, outcome_col: str = "D",
+                              label: str = "") -> pd.DataFrame:
+    """Drop pool pairs whose **rarer outcome class** has fewer than ``floor`` occurrences.
+
+    An events-per-variable (EPV) screen for the logistic risk sets: separation and coefficient
+    instability are driven by the minority class, not by "events" under a fixed label. So per pair we
+    count *both* outcomes and keep the pair only if ``min(n0, n1) >= floor``. This is direction-free:
+    for the onset set ``D == 1`` (an arb appears) is usually the rarer class, but for the closure set,
+    with short spells, survival (``D == 1``) can be rarer than closure (``D == 0``) - the binding side
+    is computed per pair rather than assumed. For the magnitude OLS the analogue is a total-row floor
+    (:func:`drop_uninformative_pairs` with ``require_variance=False``). Returns the filtered frame.
+    """
+    n1 = df.groupby("pair")[outcome_col].sum()
+    n0 = df.groupby("pair")[outcome_col].size() - n1
+    rarer = pd.concat([n0, n1], axis=1).min(axis=1)
+    keep_pairs = rarer.index[rarer >= floor]
+
+    dropped = sorted(set(df["pair"]) - set(keep_pairs))
+    if dropped:
+        print(f"{label}: dropping {len(dropped)} pairs with < {floor} rarer-class events "
+              f"(min(n_D0, n_D1)): {dropped}")
+    out = df.loc[df["pair"].isin(keep_pairs)].reset_index(drop=True)
+    print(f"{label}: kept {out.pair.nunique()} pairs, {len(out)} rows")
+    return out
 
 
 def build_risk_set(panel: pd.DataFrame, quantile: float, condition: str,
@@ -245,7 +271,7 @@ def build_risk_set(panel: pd.DataFrame, quantile: float, condition: str,
 
 
 def build_magnitude_sample(panel: pd.DataFrame, quantile: float,
-                           min_obs_per_pair: int = 5) -> pd.DataFrame:
+                           min_obs_per_pair=0) -> pd.DataFrame:
     """Magnitude-equation sample: OLS on ``log(Gap_t)`` conditional on existence (``D == 1``).
 
     Reuses :func:`prepare_model_frame` for every predetermined covariate (same lag discipline, and
@@ -262,8 +288,7 @@ def build_magnitude_sample(panel: pd.DataFrame, quantile: float,
     df = df.merge(gap_t, on=["pair", "evt_block_number"], how="left")
 
     df = df.loc[df.D == 1].reset_index(drop=True)
-    df["log_gap"] = np.log(df["gap_t"])
-    df["log1p_gap_lag"] = np.log1p(df["gap_lag"])
+    df["log_gap"] = np.log(df["gap_t"])   # log1p_gap_lag comes from prepare_model_frame
 
     df = drop_uninformative_pairs(df, "log_gap", min_obs=min_obs_per_pair,
                                   require_variance=False, label="magnitude")
@@ -322,7 +347,7 @@ def build_survival_sample(panel: pd.DataFrame, quantile: float,
     covariates in :data:`SURVIVAL_TERMS`, each anchored so it is predetermined relative to the spell
     it describes:
 
-    * ``log_base_fee, gas_util, tip_p90, mev_intensity, freq, dlogL`` - measured at the block *before*
+    * ``log_base_fee, gas_util, tip_p90, mev_intensity, freq`` - measured at the block *before*
       onset (``onset_block - 1``), the spell-level analogue of the block equations' ``_lag``
       convention (all are shaped by trading activity, so the pre-onset block keeps them strictly
       predetermined);
@@ -333,8 +358,8 @@ def build_survival_sample(panel: pd.DataFrame, quantile: float,
     every spell's own onset block, so it structurally cannot anchor onset covariates. ``spell_duration``
     is deliberately absent - feeding the outcome's time axis back in as a regressor would be circular.
     Left-truncated spells (already open at the pair's first observed block, so their pre-onset block
-    predates the window) are dropped by default; a handful more may drop if their pre-onset ``dlogL``
-    is undefined (onset one block after the pair's first).
+    predates the window) are dropped by default; a handful more may drop if their pre-onset covariates
+    are undefined (onset at the pair's first observed block, which has no preceding block).
     """
     q = naming.qlabel(quantile)
     tbl = build_spell_table(panel, quantile).rename(columns={"observed": "event"})
@@ -345,7 +370,7 @@ def build_survival_sample(panel: pd.DataFrame, quantile: float,
 
     preonset = {"log_base_fee_per_gas": "log_base_fee", "gas_util": "gas_util",
                 "log1p_tip_p90": "tip_p90", "mev_intensity": "mev_intensity",
-                "frequency_intensity": "freq", "per_log_liquidity_growth_rate_avg_venue": "dlogL"}
+                "frequency_intensity": "freq"}
     pre = panel[["pair", "evt_block_number", *preonset]].rename(columns=preonset)
     pre["onset_block"] = pre.pop("evt_block_number") + 1     # block b feeds the spell starting at b+1
     tbl = tbl.merge(pre, on=["pair", "onset_block"], how="left")
@@ -388,9 +413,11 @@ def fit_hazard_logit(model_df: pd.DataFrame, terms: Sequence[str],
                      direction: str = "logit"):
     """Fit an existence-stage hazard (onset, closure, or full existence) as a binary FE model.
 
-    Regresses ``D`` on ``terms`` plus ``C(pair)`` fixed effects, adding ``C(hour)`` / ``C(dow)`` /
-    ``C(week)`` only when the sample spans more than one level (a single-hour extract has one of
-    each, so they drop out). ``direction`` picks the link, ``"logit"`` or ``"probit"``. Onset uses
+    Regresses ``D`` on ``terms`` plus ``C(pair)`` fixed effects and ``C(hour)`` time-of-day fixed
+    effects (added only when the sample spans more than one hour). Day-of-week and iso-week effects
+    are deliberately omitted: on a sub-week study window they are near-collinear with each other and
+    carry little signal, so they only cost identification. ``direction`` picks the link, ``"logit"``
+    or ``"probit"``. Onset uses
     :data:`ONSET_TERMS` (``gap_lag`` is 0 there); closure uses :data:`CLOSURE_TERMS` or
     :data:`CLOSURE_DURATION_TERMS`. Standard errors are cluster-robust: ``cluster="pair"`` one-way,
     ``cluster=["pair", "spell_id"]`` the within-spell two-way (``spell_id`` is nested in ``pair``, so
@@ -401,7 +428,7 @@ def fit_hazard_logit(model_df: pd.DataFrame, terms: Sequence[str],
         raise ValueError(f"direction must be one of {list(fitters)}, got {direction!r}")
 
     all_terms = list(terms) + ["C(pair)"]
-    for fe, col in [("C(hour)", "hour"), ("C(dow)", "dow"), ("C(week)", "week")]:
+    for fe, col in [("C(hour)", "hour")]:
         if col in model_df.columns and model_df[col].nunique() > 1:
             all_terms.append(fe)
     formula = "D ~ " + " + ".join(all_terms)
@@ -415,7 +442,7 @@ def fit_hazard_logit(model_df: pd.DataFrame, terms: Sequence[str],
 
 
 def fit_magnitude_panel_ols(model_df: pd.DataFrame, terms: Sequence[str] = MAGNITUDE_TERMS,
-                            calendar_cols: Sequence[str] = ("hour", "dow", "week"),
+                            calendar_cols: Sequence[str] = (),
                             two_way: bool = False):
     """Within (demeaned) pool-pair fixed-effects estimator of the magnitude equation.
 
@@ -423,9 +450,9 @@ def fit_magnitude_panel_ols(model_df: pd.DataFrame, terms: Sequence[str] = MAGNI
     dummies, so the parameter vector is just the economic ``terms`` (+ constant) and the
     entity-clustered covariance has full rank even with few pool pairs. ``two_way=True`` adds block
     (time) clustering on top of the entity clustering. ``linearmodels`` is imported lazily so the
-    rest of ``arblib`` does not depend on it. Calendar controls, when the sample spans more than one
-    level, would need explicit dummy-encoding first (``PanelOLS``'s exog interface does no
-    ``C(...)`` expansion); on a single-hour extract there are none to add."""
+    rest of ``arblib`` does not depend on it. No calendar controls by default (``calendar_cols=()``):
+    pass e.g. ``("hour",)`` to add them, but note ``PanelOLS``'s exog interface does no ``C(...)``
+    expansion, so they enter as raw integer columns rather than dummies."""
 
     df = model_df.set_index(["pair", "evt_block_number"])
     all_terms = list(terms) + [c for c in calendar_cols if df[c].nunique() > 1]
@@ -466,3 +493,43 @@ def variance_inflation(model_df: pd.DataFrame, terms: Sequence[str]) -> pd.Serie
     X = sm.add_constant(model_df[list(terms)])
     return pd.Series([variance_inflation_factor(X.values, i) for i in range(X.shape[1])],
                      index=X.columns, name="VIF")
+
+
+def separation_report(result, model_df: pd.DataFrame, eps: float = 1e-4, top: int = 8) -> None:
+    """Locate where (quasi-)separation is concentrated in a fitted logit / probit.
+
+    Prints three things:
+
+    * the share of observations the model predicts *near-perfectly* (fitted probability ``< eps`` or
+      ``> 1 - eps``) - the same "a fraction ... can be perfectly predicted" statsmodels flags;
+    * how those perfectly-predicted rows split across pool pairs (and hours, if in the frame), so you
+      can see whether it is a handful of sparse ``pair x hour`` interaction cells rather than the
+      whole sample;
+    * the fixed-effect dummies carrying the **separation signature** - a coefficient driven to an
+      extreme value with an unusually tight SE (large ``|z|``), or an unidentified one (NaN SE).
+
+    A benign fit shows a low perfectly-predicted share and no extreme, tight-SE dummies. ``model_df``
+    is the frame passed to the fit (so its ``pair`` / ``hour`` columns align with the fitted rows).
+    """
+    p = np.asarray(result.predict())
+    perfect = (p < eps) | (p > 1 - eps)
+    print(f"perfectly predicted (fitted p < {eps:g} or > {1 - eps:g}): "
+          f"{int(perfect.sum())} / {len(p)} obs ({perfect.mean():.1%})")
+
+    df = model_df.reset_index(drop=True)
+    for col in ["pair", "hour"]:
+        if col in df.columns and perfect.any():
+            counts = df.loc[perfect, col].value_counts().head(top)
+            print(f"\nperfectly-predicted rows by {col} (top {top} of {df[col].nunique()}):")
+            print(counts.to_string())
+
+    fe = result.params.index[result.params.index.str.startswith("C(")]
+    if len(fe):
+        sig = pd.DataFrame({"coef": result.params[fe], "std_err": result.bse[fe]})
+        sig["abs_z"] = sig["coef"].abs() / sig["std_err"]
+        unidentified = list(sig.index[sig["std_err"].isna()])
+        if unidentified:
+            print(f"\n{len(unidentified)} fixed-effect dummies UNIDENTIFIED (NaN SE) - complete "
+                  f"separation: {unidentified}")
+        print(f"\nfixed-effect dummies by |z| (separation signature = big |coef|, tiny SE), top {top}:")
+        print(sig.sort_values("abs_z", ascending=False).head(top).round(3).to_string())

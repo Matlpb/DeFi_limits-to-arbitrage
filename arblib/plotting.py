@@ -10,6 +10,7 @@ Views:
     * plot_custom_size              - the same, at a user-chosen trade size
     * plot_arb_index                - heatmap of the round-trip gap over all pairs
     * plot_arb_durations            - arbitrage-hold durations per pool pair
+    * plot_correlation_heatmaps     - regressor correlation heatmap, one panel per regime
 
 The round-trip plotters take an ``arblib.arbitrage.PoolPair`` and delegate the P&L
 to ``arblib.arbitrage``.
@@ -22,6 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.axes import Axes
+from matplotlib.colors import LogNorm
 
 from . import arbitrage
 from .arbitrage import PoolPair
@@ -200,33 +202,52 @@ def plot_custom_size(pair: PoolPair, usd_amount: float | None = None,
     plot_directional_spreads(pair, Q, title_prefix)
 
 
-def plot_arb_index(arb_index: dict[str, pd.DataFrame], q: float) -> None:
+def plot_arb_index(arb_index: dict[str, pd.DataFrame], q: float, max_cols: int = 1000) -> None:
     """Heatmap of the round-trip gap ``Gap_t`` (bps) across pairs and blocks at size ``q``.
 
     ``arb_index`` is the ``{pair_name: frame}`` mapping from
-    :func:`arblib.arbitrage.all_pairs_gap_series`; rows are pool pairs, columns are
-    blocks, and ``q`` selects the reference-size column. A coloured cell is a profitable
-    round trip after both fees + slippage, so a near-blank map means little arbitrage in
-    the sample. The count of live (pair, block) cells is printed alongside.
+    :func:`arblib.arbitrage.all_pairs_gap_series`; rows are pool pairs, columns are blocks,
+    and ``q`` selects the reference-size column. Three things make the sparse, tiny gaps
+    actually visible: no-arb cells (``Gap_t == 0``) are masked to **white**; a **log** colour
+    scale spreads the many small gaps (which a linear 0-to-max scale washes out); and, since a
+    six-day window has ~40k block columns, blocks are **max-binned** into ``max_cols`` columns
+    so a one-block arbitrage spell is not averaged into invisibility (max keeps any live cell).
+    The count of live (pair, block) cells is printed alongside.
     """
     pairs = list(arb_index)
-    mat = np.vstack([arb_index[p][q].to_numpy() for p in pairs])
+    mat = np.vstack([arb_index[p][q].to_numpy(dtype=float) for p in pairs])
     blocks = next(iter(arb_index.values())).index.to_numpy()
 
     n_live = int((mat > 0).sum())
+    finite_max = np.nanmax(mat) if np.isfinite(mat).any() else 0.0
     print(f"q{int(q * 100)}: {n_live} live (pair, block) cells of {mat.size} "
-          f"| max gap = {mat.max():.2f} bps")
+          f"| max gap = {finite_max:.2f} bps")
+
+    # max-bin the block axis so sparse spells survive the downsampling to pixels
+    if mat.shape[1] > max_cols:
+        starts = np.linspace(0, mat.shape[1], max_cols + 1, dtype=int)[:-1]
+        disp = np.maximum.reduceat(np.nan_to_num(mat, nan=0.0), starts, axis=1)
+    else:
+        disp = mat
+
+    disp = np.ma.masked_where((disp <= 0) | ~np.isfinite(disp), disp)   # no-arb / bad -> white
+    vmax = disp.max() if disp.count() else 1.0
+    vmin = max(disp.min(), vmax / 1e3) if disp.count() else 1.0          # 3 decades of range
+
+    cmap = plt.cm.YlOrRd.copy()
+    cmap.set_bad("white")
 
     fig, ax = plt.subplots(figsize=(14, 0.45 * len(pairs) + 2))
     im = ax.imshow(
-        mat, aspect="auto", cmap="Reds", vmin=0,
-        extent=[blocks[0], blocks[-1], len(pairs) - 0.5, -0.5],
+        disp, aspect="auto", cmap=cmap, norm=LogNorm(vmin=vmin, vmax=vmax),
+        interpolation="nearest", extent=[blocks[0], blocks[-1], len(pairs) - 0.5, -0.5],
     )
     ax.set_yticks(range(len(pairs)))
     ax.set_yticklabels(pairs, fontsize=8)
     ax.set_xlabel("block number")
-    ax.set_title(f"Round-trip gap Gap_t [bps] by pool pair - reference size q{int(q * 100)}")
-    fig.colorbar(im, ax=ax, label="Gap_t [bps]  (blank = no arb)")
+    ax.set_title(f"Round-trip gap Gap_t [bps] by pool pair - reference size q{int(q * 100)}  "
+                 f"({n_live} live cells)")
+    fig.colorbar(im, ax=ax, label="Gap_t [bps], log scale  (white = no arb)")
     fig.tight_layout()
     plt.show()
 
@@ -256,4 +277,39 @@ def plot_arb_durations(durations: pd.DataFrame, q: float) -> None:
     ax.set_ylabel("arb-hold duration [consecutive blocks with Gap_t > 0]")
     ax.set_title(f"Arbitrage-hold duration sequence per pool pair - trade size q{int(q * 100)}")
     ax.legend(fontsize=6, ncol=2, loc="upper left", bbox_to_anchor=(1.01, 1.0))
+    plt.show()
+
+
+def plot_correlation_heatmaps(corr_by_regime: dict[str, pd.DataFrame],
+                              cmap: str = "RdBu_r") -> None:
+    """Side-by-side regressor correlation heatmaps, one panel per regime.
+
+    ``corr_by_regime`` maps a regime label to its square correlation matrix (from
+    :func:`arblib.reporting.covariate_correlations`). Each panel is a diverging heatmap on the fixed
+    ``[-1, 1]`` scale (blue negative, red positive), with the correlation printed in every cell; all
+    panels share the same variable order and colour scale, so a given cell's colour is directly
+    comparable across regimes. Cell text flips to white on saturated (``|r| > 0.5``) tiles for
+    legibility."""
+    names = list(corr_by_regime)
+    fig, axes = plt.subplots(1, len(names), figsize=(6.2 * len(names), 5.8),
+                             layout="constrained")
+    axes = np.atleast_1d(axes)
+
+    im = None
+    for ax, name in zip(axes, names):
+        c = corr_by_regime[name]
+        vals = c.to_numpy()
+        im = ax.imshow(vals, vmin=-1, vmax=1, cmap=cmap)
+        ax.set_title(name, fontweight="bold")
+        ax.set_xticks(range(len(c.columns)))
+        ax.set_xticklabels(c.columns, rotation=45, ha="right", fontsize=8)
+        ax.set_yticks(range(len(c.index)))
+        ax.set_yticklabels(c.index, fontsize=8)
+        for i in range(vals.shape[0]):
+            for j in range(vals.shape[1]):
+                ax.text(j, i, f"{vals[i, j]:.2f}", ha="center", va="center", fontsize=7,
+                        color="white" if abs(vals[i, j]) > 0.5 else "black")
+
+    fig.colorbar(im, ax=list(axes), shrink=0.85, label="Pearson correlation")
+    fig.suptitle("Regressor correlation by volatility regime", fontsize=13, fontweight="bold")
     plt.show()

@@ -93,14 +93,17 @@ class Settings:
     USDC); they drive the Dune query and the plot labels. ``token0`` / ``token1`` are
     the same two tokens in on-chain ascending-address order, matching the ``token0`` /
     ``token1`` columns of the swap data (so ``token0.decimals`` replaces literal
-    decimals). Every path derives from ``base_dir/chain/"<base>_<quote>"``, so a
-    different pair or chain writes to its own folder instead of colliding.
+    decimals). Every path derives from ``base_dir/chain/"<base>_<quote>"/<regime>_vol``, so a
+    different pair, chain, or volatility regime writes to its own folder instead of colliding
+    (re-running for another regime never overwrites the last one).
     """
 
     chain: str
     base: Token
     quote: Token
     max_gap_blocks: int = 6000
+    max_invalid_liquidity_frac: float = 0.10   # drop pools with > this share of null / zero active liquidity
+    min_events_per_pair: int = 55              # EPV floor: min rarer-class events (or rows) a pool pair needs to be fit
     mev_horizon_blocks: int =20
     vol_horizon_min: int = 30
     cex_avg_window_min: int = 60
@@ -109,7 +112,7 @@ class Settings:
     regime_buffer_days: int = 75        # EWMA warm-up lead before the classified year
     regime_window_days: int = 6         # length of each regime study window (days)
     extract_lead_hours: int = 4         # block-data warm-up lead before a chosen study window
-    active_regime: str = "high"         # which window extract / transform operate on: low | mid | high
+    active_regime: str = "mid"         # which window extract / transform operate on: low | mid | high
     test_mode: bool = False             # extract an explicit custom window instead of the regime window
     test_start: str | None = None       # "YYYY-MM-DD HH:MM:SS" UTC; used only when test_mode
     test_end: str | None = None         # "YYYY-MM-DD HH:MM:SS" UTC; used only when test_mode
@@ -126,8 +129,21 @@ class Settings:
         return max(self.base, self.quote, key=lambda t: t.address.lower())
 
     @property
-    def data_dir(self) -> Path:
+    def pair_dir(self) -> Path:
+        """Pair-level root: ``base_dir / chain / "<base>_<quote>"`` (shared across regimes)."""
         return self.base_dir / self.chain / f"{self.base.symbol}_{self.quote.symbol}"
+
+    @property
+    def regime_tag(self) -> str:
+        """Output sub-folder for the active volatility regime: ``low_vol`` | ``mid_vol`` | ``high_vol``
+        (or ``test`` in test mode). Keeps each regime's outputs side by side under ``pair_dir``."""
+        return "test" if self.test_mode else f"{self.active_regime}_vol"
+
+    @property
+    def data_dir(self) -> Path:
+        """All outputs for the active regime live here: ``pair_dir / regime_tag``. Auto-created on
+        save (every save helper ``mkdir``s), so re-running for another regime never overwrites."""
+        return self.pair_dir / self.regime_tag
 
     @property
     def data_analysis_dir(self) -> Path:
@@ -205,8 +221,12 @@ class Settings:
 
     @property
     def study_dates_path(self) -> Path:
-        """The three chosen regime windows (low / mid / high) written by market_regime_detection."""
-        return self.data_analysis_dir / "study_dates.csv"
+        """The three chosen regime windows (low / mid / high) written by market_regime_detection.
+
+        Regime-INDEPENDENT (it holds all three windows at once), so it lives at the **pair level** -
+        shared by every ``<regime>_vol`` folder - and 01 writes it once for all regimes. 02 / 03 read
+        it from here whatever ``active_regime`` is set to."""
+        return self.pair_dir / "study_dates.csv"
 
 
 STUDY = Settings(
@@ -214,7 +234,7 @@ STUDY = Settings(
     base=TOKENS["ethereum"]["WETH"],
     quote=TOKENS["ethereum"]["USDC"],
     mev_horizon_blocks=15,   # ~10 min at 12s/block
-    test_mode=True,                       # TEST: extract the custom window below; set False for the real regime run
-    test_start="2025-12-31 10:00:00",     # UTC
-    test_end="2025-12-31 11:00:00",       # UTC
+    # test_mode=True,                       # TEST: extract the custom window below; set False for the real regime run
+    # test_start="2025-12-31 10:00:00",     # UTC
+    # test_end="2025-12-31 11:00:00",       # UTC
 )

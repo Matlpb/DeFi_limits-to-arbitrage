@@ -92,34 +92,30 @@ def save_common_covariates(x_usd: pd.DataFrame, y_usd: pd.DataFrame, chain_gas: 
     print(f"Saved common covariates (CEX_volatility, chain_covariates) to {out_dir}")
 
 
-def _dlog(liquidity: pd.Series) -> np.ndarray:
-    """Per-block active-liquidity log-growth ``log(L_t / L_{t-1})``; NaN on the first row.
-
-    The processed series is dense on the block grid (gap-free reconstruction), so consecutive
-    rows are consecutive blocks and this is a true one-block growth rate."""
-    return np.diff(np.log(liquidity.astype(float).to_numpy()), prepend=np.nan)
-
-
-def pair_covariates(pools: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+def pair_covariates(pools: dict[str, pd.DataFrame],
+                    keep_pairs: "list | set | None" = None) -> dict[str, pd.DataFrame]:
     """Build the per-pool-pair covariate table for every unordered pool pair.
+
+    ``keep_pairs`` (pair-name keys, e.g. from a filtered ``arb_index``) restricts the output to those
+    pairs, so pairs with no arbitrage events are not written and stay aligned with the dependent
+    variable.
 
     For each pair (venue 1, venue 2), aligned on ``evt_block_number`` (same names / order as
     :func:`arblib.arbitrage.all_pairs_gap_series`, so the files key identically to the dependent
-    variable), returns ``[evt_block_number, evt_block_time, mev_intensity, frequency_intensity,
-    per_log_liquidity_growth_rate_avg_venue]``. All three are venue-averaged and contemporaneous
-    at block t (lag downstream to make them predetermined, as with the dependent variable):
+    variable), returns ``[evt_block_number, evt_block_time, mev_intensity, frequency_intensity]``.
+    Both are venue-averaged and contemporaneous at block t (lag downstream to make them
+    predetermined, as with the dependent variable):
 
     * ``mev_intensity`` = 1/2 (log(1 + mev_intensity_1) + log(1 + mev_intensity_2)) - the top-tip
       MEV proxy in logs (it is a wei magnitude), averaged over the two venues.
     * ``frequency_intensity`` = 1/2 (nb_swaps_ewma_1 + nb_swaps_ewma_2) - the order-flow /
       contest-frequency EWMA, averaged over the two venues.
-    * ``per_log_liquidity_growth_rate_avg_venue`` = 1/2 (dlog L_1 + dlog L_2) with
-      dlog L = log(L_t / L_{t-1}) (:func:`_dlog`) - per-venue active-liquidity log-growth,
-      averaged; NaN on the first block. Its one-block lag is the model's
-      ``mean_dlog_L_{p,t-1}``.
     """
+    keep = set(keep_pairs) if keep_pairs is not None else None
     out = {}
     for name, n1, n2 in naming.iter_pairs(pools):
+        if keep is not None and name not in keep:
+            continue
         m = pools[n1].merge(pools[n2], on="evt_block_number", suffixes=("_1", "_2"))
         out[name] = pd.DataFrame({
             "evt_block_number": m["evt_block_number"],
@@ -128,12 +124,14 @@ def pair_covariates(pools: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
                                     + np.log1p(m["mev_intensity_2"].astype(float))),
             "frequency_intensity": 0.5 * (m["nb_swaps_ewma_1"].astype(float)
                                           + m["nb_swaps_ewma_2"].astype(float)),
-            "per_log_liquidity_growth_rate_avg_venue": 0.5 * (_dlog(m["liquidity_1"])
-                                                              + _dlog(m["liquidity_2"])),
         })
     return out
 
 
-def save_pair_covariates(pools: dict[str, pd.DataFrame], out_dir: str | Path) -> None:
-    """Write one pool-pair covariate parquet per pair to ``out_dir`` (:func:`pair_covariates`)."""
-    data_io.save_frames(pair_covariates(pools), out_dir, label="pool-pair covariate")
+def save_pair_covariates(pools: dict[str, pd.DataFrame], out_dir: str | Path,
+                         keep_pairs: "list | set | None" = None) -> None:
+    """Write one pool-pair covariate parquet per pair to ``out_dir`` (:func:`pair_covariates`).
+
+    ``keep_pairs`` restricts the saved pairs (e.g. to those with arbitrage events), matching the
+    dependent-variable set."""
+    data_io.save_frames(pair_covariates(pools, keep_pairs), out_dir, label="pool-pair covariate")

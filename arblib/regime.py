@@ -230,8 +230,7 @@ def plot_regimes(daily: pd.DataFrame, candidates: pd.DataFrame | None = None,
         patches = [Patch(facecolor=_COLORS[r], alpha=0.45, label=f"{r}-vol window") for r in _COLORS]
 
     ax.set_ylabel("volatility of token0/token1 rate"); ax.set_xlabel("date")
-    ax.set_title("CEX volatility regimes — daily EWMA vol, rolling-median signal, terciles "
-                 "(solid = rank-1, faint = fallback)")
+    ax.set_title("CEX volatility regimes — daily EWMA vol, rolling-median signal, terciles ")
     lines = ax.get_legend_handles_labels()[0]
     ax.legend(handles=lines + patches, loc="upper right", fontsize=8, framealpha=0.9, ncol=2)
     fig.tight_layout()

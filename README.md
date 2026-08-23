@@ -40,10 +40,12 @@ Run the notebooks in this order — each consumes the previous step's output:
 | 5 | `05_arbitrage_index.ipynb` | executable cross-pool round-trip gaps → dependent variable + pair covariates | processed, quantiles → `modeling/dependant_variable/`, `.../pool_pair_dependant_covariates/` |
 | 6 | `06_model_existence` · `07_model_magnitude` · `08_model_persistence` · `09_model_survival` *(any order)* | the four panel models on the assembled panel | `modeling/*` → *(results in-notebook)* |
 
-**Regimes.** Set `STUDY.active_regime` (`"low" \| "mid" \| "high"`) once in `config.py`; steps 2–3 use
-it. Process one regime end-to-end (its data overwrites `data_analysis/`), then change `active_regime`
-and repeat. Each extraction pulls a few hours *before* the window so price / liquidity are live and
-the MEV / frequency EWMAs have converged by the first study block.
+**Regimes.** Set `STUDY.active_regime` (`"low" \| "mid" \| "high"`) once in `config.py`; steps 2–8 all
+key off it. Each regime writes to its own `<regime>_vol/` folder (auto-created), so running another
+regime never overwrites the last — change `active_regime` and re-run, no cleanup needed.
+`study_dates.csv` (from step 1) is shared at the pair level, since the windows don't depend on the
+regime. Each extraction pulls a few hours *before* the window so price / liquidity are live and the
+MEV / frequency EWMAs have converged by the first study block.
 
 ## `arblib` modules
 
@@ -62,9 +64,13 @@ volatility-regime detection and the study-window handoff) · `plotting`.
 
 ## Data layout (per pair, e.g. `ethereum/WETH_USDC/`)
 
+`study_dates.csv` is shared across regimes; everything else is per-regime under `<regime>_vol/`
+(auto-created), so each volatility regime is self-contained.
+
 ```
-data_analysis/   study_dates.csv, trade_size_quantiles.csv,
-                 {swaps, liquidity, gas, prices, processed}/
-modeling/        dependant_variable/*.parquet
-                 covariates/{common_covariates, pool_pair_dependant_covariates}/*.parquet
+study_dates.csv                  # shared: the 3 regime windows (written by step 1)
+<regime>_vol/                    # high_vol | mid_vol | low_vol  (= STUDY.active_regime)
+  data_analysis/   trade_size_quantiles.csv, {swaps, liquidity, gas, prices, processed}/
+  modeling/        dependant_variable/*.parquet
+                   covariates/{common_covariates, pool_pair_dependant_covariates}/*.parquet
 ```

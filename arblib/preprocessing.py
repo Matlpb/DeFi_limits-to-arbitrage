@@ -218,6 +218,35 @@ def filter_pools_by_constant_fee(pool_dfs: dict[str, pd.DataFrame]) -> tuple[dic
     return kept, dropped
 
 
+def filter_pools_by_liquidity(pool_dfs: dict[str, pd.DataFrame],
+                              max_invalid_frac: float = 0.10) -> tuple[dict[str, pd.DataFrame], list]:
+    """Drop pools whose reconstructed active liquidity is invalid on too many blocks.
+
+    A block with no in-range liquidity (``L == 0``) or undefined ``L`` (null, before the pool's first
+    swap) has no executable price: the round-trip math divides by ``L``, and ``log(L)`` is ``-inf`` at
+    ``L == 0``, so a thin/dead pool poisons the liquidity-growth covariate (a single ``-inf`` makes a
+    whole column's mean non-finite downstream). Pools with more than ``max_invalid_frac`` of blocks
+    null or ``<= 0`` are dropped. Run this AFTER :func:`reconstruct_liquidity_states` (it reads the
+    rebuilt ``liquidity`` column). Returns ``(kept, dropped)``.
+    """
+    kept = {}
+    dropped = []
+    for pool_name, df in pool_dfs.items():
+        L = pd.to_numeric(df["liquidity"], errors="coerce")
+        invalid = float((L.isna() | (L <= 0)).mean())
+        if invalid <= max_invalid_frac:
+            kept[pool_name] = df
+        else:
+            dropped.append((pool_name, f"{invalid:.1%} of blocks null or <= 0 liquidity"))
+
+    print(f"Kept {len(kept)} pools with <= {max_invalid_frac:.0%} invalid (null / zero) liquidity")
+    if dropped:
+        print(f"Dropped {len(dropped)} pool(s):")
+        for pool_name, reason in dropped:
+            print(f"  {pool_name}: {reason}")
+    return kept, dropped
+
+
 def _complete_block_times(grid: pd.DataFrame) -> pd.DataFrame:
     """Fill ``evt_block_time`` for blocks no pool traded in.
 
