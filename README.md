@@ -1,76 +1,60 @@
 # DeFi cross-DEX arbitrage — limits to arbitrage
 
-A panel study of **when** a cross-DEX arbitrage exists and **how large / how persistent** it is, for
-one token pair (default WETH/USDC on Ethereum, Uniswap vs PancakeSwap), conditioned on CEX
-**volatility regimes**. All logic lives in the `arblib` package; the notebooks are call-only drivers
-run in a fixed order, each reading what the previous one wrote.
+A panel study of **when** a cross-DEX arbitrage exists, **how large** it is, and **how long** it
+persists, for one token pair traded across several DEXes, conditioned on CEX **volatility regimes**.
 
-Everything is parameterised from **one place** — `arblib/config.py` (the `STUDY` instance): token
-pair, chain, the classified year, the study-window length, the `active_regime`, Dune query ids, and
-every derived path. Re-parametrise the study by editing `STUDY`, not the notebooks.
+All the logic lives in the **`arblib`** package; the numbered notebooks are thin, call-only drivers
+that run it in order.
+
+## What the library does
+
+`arblib` takes the study from raw data to fitted models in three stages:
+
+1. **Extract** — pull the on-chain data (DEX swaps, liquidity events, gas) from **Dune** and the CEX
+   USD prices from **Kraken**, for one study window.
+2. **Preprocess** — reconstruct a per-block state for every pool, build the covariates, and assemble
+   the cross-DEX arbitrage panel (the dependent variable together with its predictors).
+3. **Model** — fit the existence, magnitude, persistence, and survival models on that panel, and
+   produce the summary and regression tables.
+
+Everything is parameterised from **one place** — `arblib/config.py` (the `STUDY` instance): the token
+pair, the chain, the classified year, the Dune query ids, and every derived output path. Re-run the
+whole study for a different pair, chain, or volatility regime by editing `STUDY` — nothing else.
 
 ## Setup
 
-> Requires **Python 3.13**. macOS `brew install python@3.13` · Ubuntu `sudo apt install python3.13 python3.13-venv`.
+> Requires Python 3.11+.
 
 ```bash
-git clone https://github.com/Matlpb/DeFi_limits-to-arbitrage.git
-cd DeFi_limits-to-arbitrage
-
-python3.13 -m venv .venv
-source .venv/bin/activate            # Windows: .venv\Scripts\activate
-python -m pip install --upgrade pip
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt jupyter ipykernel
-
-echo "DUNE_API_KEY=your_key_here" > .env   # needed only by 02_extract.ipynb
+echo "DUNE_API_KEY=your_key_here" > .env
 ```
 
-> Reactivate the venv each session with `source .venv/bin/activate`.
+You also need the **Dune queries** the pipeline runs. They are versioned as SQL in
+[`arblib/sql/`](arblib/sql) (see its README for what each one returns). Create each as a saved query
+in your Dune account and put its query id in `arblib/config.py` — the pipeline executes them by id.
 
-## Run order
+## How to run
 
-Run the notebooks in this order — each consumes the previous step's output:
+Run the notebooks in order; each reads what the previous one wrote:
 
-| # | notebook | does | reads → writes (under `<chain>/<pair>/`) |
-|---|---|---|---|
-| 1 | `01_market_regime_detection.ipynb` | pick one calm / medium / turbulent week from a year of Kraken prices | *(Kraken)* → `data_analysis/study_dates.csv` |
-| 2 | `02_extract.ipynb` *(Dune)* | pull swaps / liquidity / gas / CEX prices for `active_regime`'s window (+ a warm-up lead) | `study_dates.csv` → `data_analysis/{swaps,liquidity,gas,prices}/` |
-| 3 | `03_transform.ipynb` | reconstruct per-block pool state, MEV proxies, shared covariates | extracts → `data_analysis/processed/`, `modeling/covariates/common_covariates/` |
-| 4 | `04_trade_sizes.ipynb` | pooled USD trade-size distribution → reference quantiles | swaps, prices → `data_analysis/trade_size_quantiles.csv` |
-| 5 | `05_arbitrage_index.ipynb` | executable cross-pool round-trip gaps → dependent variable + pair covariates | processed, quantiles → `modeling/dependant_variable/`, `.../pool_pair_dependant_covariates/` |
-| 6 | `06_model_existence` · `07_model_magnitude` · `08_model_persistence` · `09_model_survival` *(any order)* | the four panel models on the assembled panel | `modeling/*` → *(results in-notebook)* |
+1. `01_market_regime_detection.ipynb` — **automatically selects the study windows**: classifies a year
+   of CEX volatility into calm / medium / turbulent and picks one representative week per regime.
+2. `02_extract.ipynb` — extract the data for the active regime's window (Dune + Kraken).
+3. `03_transform.ipynb` — reconstruct pool state and build the covariates.
+4. `04_trade_sizes.ipynb` — the reference trade sizes.
+5. `05_arbitrage_index.ipynb` — assemble the cross-DEX arbitrage panel.
+6. `06`–`08` — the existence, magnitude, and persistence models.
+7. `analysis.ipynb` — the cross-regime summary and regression tables. Compiles results of all regressions in compressed tables + generate the latex.
 
-**Regimes.** Set `STUDY.active_regime` (`"low" \| "mid" \| "high"`) once in `config.py`; steps 2–8 all
-key off it. Each regime writes to its own `<regime>_vol/` folder (auto-created), so running another
-regime never overwrites the last — change `active_regime` and re-run, no cleanup needed.
-`study_dates.csv` (from step 1) is shared at the pair level, since the windows don't depend on the
-regime. Each extraction pulls a few hours *before* the window so price / liquidity are live and the
-MEV / frequency EWMAs have converged by the first study block.
+Which volatility regime the pipeline runs on is set once by `STUDY.active_regime` in `config.py`; each
+regime writes to its own folder, so switching regime and re-running never overwrites the last.
 
 ## `arblib` modules
 
-**Data & IO** — `config` (the `STUDY` settings + all derived paths) · `dune_api` / `kraken_api` (REST
-clients: on-chain events via Dune, CEX prices via Kraken) · `data_io` (generic load/save of the CSV
-extracts, processed pools, quantiles).
-
-**Features** (build the modeling-ready data) — `formulas` (AMM/pricing primitives, EWMA vol, MEV
-proxies) · `preprocessing` (clean swaps → per-pool block series → active liquidity) · `analysis` /
-`sizing` (cross-DEX mid gaps; USD trade-size distribution) · `arbitrage` (executable prices +
-per-pool-pair arbitrage index) · `modeling` (writes the dependent-variable and covariate parquets).
-
-**Models & selection** — `estimation` (assembles the pooled panel and fits the four models: FE
-logit/probit, within-FE OLS, Cox, Weibull AFT, with cluster-robust SEs) · `regime` (CEX
-volatility-regime detection and the study-window handoff) · `plotting`.
-
-## Data layout (per pair, e.g. `ethereum/WETH_USDC/`)
-
-`study_dates.csv` is shared across regimes; everything else is per-regime under `<regime>_vol/`
-(auto-created), so each volatility regime is self-contained.
-
-```
-study_dates.csv                  # shared: the 3 regime windows (written by step 1)
-<regime>_vol/                    # high_vol | mid_vol | low_vol  (= STUDY.active_regime)
-  data_analysis/   trade_size_quantiles.csv, {swaps, liquidity, gas, prices, processed}/
-  modeling/        dependant_variable/*.parquet
-                   covariates/{common_covariates, pool_pair_dependant_covariates}/*.parquet
-```
+- **Data access** — `config` (all parameters), `dune_api` / `kraken_api` (REST clients), `data_io`.
+- **Features** — `formulas`, `preprocessing`, `analysis`, `sizing`, `arbitrage`, `modeling` (the panel
+  build).
+- **Models** — `estimation`, `regime`, `summary`, `reporting`.
+- **Support** — `naming`, `plotting`, and the Dune query sources in `sql/`.

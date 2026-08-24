@@ -16,9 +16,9 @@ arbitrage     : executable prices + per-pool-pair arbitrage index (PoolPair)
 modeling      : feature build - dependent variable + covariates -> parquet
 estimation    : panel assembly + the block-level / spell-level models
 naming        : shared quantile-suffix / pool-pair naming + iteration conventions
-plotting      : price, trade-size, and round-trip spread plots
+plotting      : price, trade-size, round-trip spread, and correlation-heatmap plots
 summary       : cross-regime descriptive summary-statistics tables
-reporting     : cross-regime onset / closure / magnitude coefficient tables
+reporting     : cross-regime coefficient tables + regressor correlation matrices
 """
 
 from . import (

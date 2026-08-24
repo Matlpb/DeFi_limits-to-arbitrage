@@ -46,25 +46,38 @@ GAS_FILES: dict[str, str] = {
 }
 
 # Kraken spot market used to price each token in USD (for the volatility control).
+# WBTC has no direct Kraken market; it is ~1:1 pegged to BTC, so it is priced via BTC/USD
+# (Kraken tickers Bitcoin as "XBT", so BTC/USD is "XBTUSD").
 KRAKEN_PAIRS: dict[str, str] = {
     "WETH": "ETHUSD",
     "USDC": "USDCUSD",
+    "WBTC": "XBTUSD",
+    "USDT": "USDTUSD",
 }
 
 
 @dataclass(frozen=True)
 class Token:
-    """One ERC-20 token: its symbol, lower-cased address (as Dune returns it), and decimals."""
+    """One ERC-20 token: its symbol, address, and decimals.
+
+    ``address`` is normalised to lower-case in :meth:`__post_init__` (that is how Dune returns it),
+    so a checksummed / mixed-case literal pasted from a block explorer still matches the on-chain
+    swap data and the Dune query parameters."""
 
     symbol: str
     address: str
     decimals: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "address", self.address.lower())
 
 
 TOKENS: dict[str, dict[str, Token]] = {
     "ethereum": {
         "WETH": Token("WETH", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", 18),
         "USDC": Token("USDC", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", 6),
+        "WBTC": Token("WBTC", "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599", 8),
+        "USDT": Token("USDT", "0xdAC17F958D2ee523a2206206994597C13D831ec7", 6),
     },
     "base": {
         "WETH": Token("WETH", "0x4200000000000000000000000000000000000006", 18),
@@ -112,7 +125,7 @@ class Settings:
     regime_buffer_days: int = 75        # EWMA warm-up lead before the classified year
     regime_window_days: int = 6         # length of each regime study window (days)
     extract_lead_hours: int = 4         # block-data warm-up lead before a chosen study window
-    active_regime: str = "mid"         # which window extract / transform operate on: low | mid | high
+    active_regime: str = "high"         # which window extract / transform operate on: low | mid | high
     test_mode: bool = False             # extract an explicit custom window instead of the regime window
     test_start: str | None = None       # "YYYY-MM-DD HH:MM:SS" UTC; used only when test_mode
     test_end: str | None = None         # "YYYY-MM-DD HH:MM:SS" UTC; used only when test_mode
@@ -232,7 +245,7 @@ class Settings:
 STUDY = Settings(
     chain="ethereum",
     base=TOKENS["ethereum"]["WETH"],
-    quote=TOKENS["ethereum"]["USDC"],
+    quote=TOKENS["ethereum"]["USDT"],
     mev_horizon_blocks=15,   # ~10 min at 12s/block
     # test_mode=True,                       # TEST: extract the custom window below; set False for the real regime run
     # test_start="2025-12-31 10:00:00",     # UTC

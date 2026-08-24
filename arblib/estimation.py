@@ -7,8 +7,8 @@ predetermined regressors (:func:`prepare_model_frame`), carves the sample each s
 (:func:`build_risk_set` for the onset / closure hazards, :func:`build_magnitude_sample`,
 :func:`build_spell_table` / :func:`build_survival_sample` for the spell-level survival models), and
 fits them with pool-pair fixed effects and cluster-robust SEs (:func:`fit_hazard_logit`,
-:func:`fit_magnitude_panel_ols`), plus post-estimation helpers (:func:`average_marginal_effects`,
-:func:`variance_inflation`). The parquet feature build lives in :mod:`arblib.modeling`.
+:func:`fit_magnitude_panel_ols`), plus post-estimation diagnostics (:func:`variance_inflation`,
+:func:`separation_report`). The parquet feature build lives in :mod:`arblib.modeling`.
 """
 
 from __future__ import annotations
@@ -472,19 +472,6 @@ def center_continuous(df: pd.DataFrame, cols: Sequence[str]) -> pd.DataFrame:
     for c in cols:
         out[c] = out[c] - out[c].mean()
     return out
-
-
-def average_marginal_effects(result, terms: Sequence[str] | None = None) -> pd.DataFrame:
-    """Average marginal effects (``AME = mean_i dPr(D=1)/dX_k``) with the fitted (clustered) SEs.
-
-    Raw logit / probit coefficients are not probability changes, so report AME - the sample average
-    of the per-observation marginal effect (``at="overall"``). Returns the tidy ``summary_frame`` of
-    ``result.get_margeff``; if ``terms`` is given, restricts to those regressors, dropping the
-    fixed-effect dummies."""
-    frame = result.get_margeff(at="overall").summary_frame()
-    if terms is not None:
-        frame = frame.loc[[t for t in terms if t in frame.index]]
-    return frame
 
 
 def variance_inflation(model_df: pd.DataFrame, terms: Sequence[str]) -> pd.Series:

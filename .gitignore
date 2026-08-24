@@ -5,13 +5,19 @@
 .env
 
 # images (not needed in the repo)
-.png   
+*.png
 
-# data (large CSVs, not needed in the repo)
+# data (large CSVs / parquet, not needed in the repo) — one dir per chain and per token pair
 ethereum/
 base/
+WETH_USDC/
+WETH_USDT/
+WETH_WBTC/
 
 # python
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+
+# macOS
+.DS_Store
