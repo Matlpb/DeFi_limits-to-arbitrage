@@ -245,7 +245,7 @@ class Settings:
 STUDY = Settings(
     chain="ethereum",
     base=TOKENS["ethereum"]["WETH"],
-    quote=TOKENS["ethereum"]["USDT"],
+    quote=TOKENS["ethereum"]["USDC"],
     mev_horizon_blocks=15,   # ~10 min at 12s/block
     # test_mode=True,                       # TEST: extract the custom window below; set False for the real regime run
     # test_start="2025-12-31 10:00:00",     # UTC

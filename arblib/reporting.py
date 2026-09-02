@@ -43,6 +43,14 @@ _CLOSURE_ORDER = _ONSET_ORDER + ["spell_duration", "log1p_gap_lag"]
 _MAGNITUDE_ORDER = _ONSET_ORDER + ["log1p_gap_lag"]
 _CORR_ORDER = _CLOSURE_ORDER   # the full union of block-level regressors appearing in the tables
 
+# Leading descriptive column of each hazard table: the unconditional base rate of D == 1 *in that
+# model's own estimation sample*. Both are the same statistic - mean(D) - read under the risk set the
+# equation conditions on: on the onset risk set (gap_lag == 0) D == 1 is a gap appearing, so the rate
+# is the existence rate; on the closure risk set (gap_lag > 0) D == 1 is the spell surviving block t,
+# so it is the survival rate (1 - closure rate). Survival, not closure, is reported so the descriptive
+# number measures literally the outcome the coefficients are signed with respect to.
+_RATE_LABEL = {"onset": "existence rate (%)", "closure": "survival rate (%)"}
+
 _DEFAULT_QUANTILES = (0.2, 0.4)
 
 
@@ -81,14 +89,20 @@ def _quiet(verbose: bool):
 def _hazard_row(panel: pd.DataFrame, quantile: float, condition: str, order, terms,
                 floor: int) -> dict:
     """Fit one onset / closure logit (06 / 08 recipe) and return its coefficient + fit-stat row."""
+    rate_label = _RATE_LABEL[condition]
     df = est.build_risk_set(panel, quantile=quantile, condition=condition)
     df = est.drop_pairs_by_event_floor(df, floor, label=condition)
     if df["pair"].nunique() < 2 or df["D"].nunique() < 2:
-        return {**{_DISPLAY[t]: "—" for t in order}, "pseudo R²": "—",
+        rate = f"{100 * float(df['D'].mean()):.2f}" if len(df) else "—"
+        return {rate_label: rate, **{_DISPLAY[t]: "—" for t in order}, "pseudo R²": "—",
                 "N": len(df), "N_pairs": df["pair"].nunique()}
     df_c = est.center_continuous(df, terms)
     res = est.fit_hazard_logit(df_c, terms, cluster="pair", direction="logit")
     row = _coef_row(res, order, res.params, res.pvalues)
+    # Base rate over the rows the logit actually fit (``res.model.endog`` is D after any listwise
+    # drop), so #{D==1} / N uses exactly the N reported two columns to the right. Formatted, like the
+    # coefficient cells, so ``to_latex()`` emits "2.11" rather than a 6-decimal float.
+    row[rate_label] = f"{100 * float(np.mean(res.model.endog)):.2f}"
     row["pseudo R²"] = round(float(res.prsquared), 4)
     row["N"] = int(res.nobs)
     row["N_pairs"] = int(df_c["pair"].nunique())
@@ -107,7 +121,8 @@ def _hazard_table(panels, settings, condition: str, order, terms,
                                         settings.min_events_per_pair))
             index.append((REGIME_LABELS[regime], naming.qlabel(q)))
     table = pd.DataFrame(rows, index=pd.MultiIndex.from_tuples(index, names=["Regime", "q"]))
-    return table[[_DISPLAY[t] for t in order] + ["pseudo R²", "N", "N_pairs"]]
+    return table[[_RATE_LABEL[condition]] + [_DISPLAY[t] for t in order]
+                 + ["pseudo R²", "N", "N_pairs"]]
 
 
 def onset_table(panels, settings, quantiles=_DEFAULT_QUANTILES, verbose: bool = False) -> pd.DataFrame:
@@ -116,7 +131,12 @@ def onset_table(panels, settings, quantiles=_DEFAULT_QUANTILES, verbose: bool = 
     Risk set ``gap_lag == 0``; ``D`` on :data:`arblib.estimation.ONSET_TERMS` with pool-pair and
     hour-of-day fixed effects and pair-clustered SEs. Cells are ``coef`` with significance stars
     (``*** ``p<0.01, ``**`` p<0.05, ``*`` p<0.10); trailing columns are McFadden pseudo R^2, the
-    risk-set N, and the pool-pair count kept after the constant-D and EPV-floor screens."""
+    risk-set N, and the pool-pair count kept after the constant-D and EPV-floor screens.
+
+    The leading ``existence rate (%)`` column is the descriptive base rate the model explains:
+    ``100 x #{D == 1} / N`` over that cell's **own** estimation sample - after the EPV floor and
+    restricted to ``gap_lag == 0`` - so it is computed on exactly the N rows reported in the same row,
+    not on the unconditioned panel of Table 1."""
     return _hazard_table(panels, settings, "onset", _ONSET_ORDER, est.ONSET_TERMS, quantiles, verbose)
 
 
@@ -125,7 +145,14 @@ def closure_table(panels, settings, quantiles=_DEFAULT_QUANTILES, verbose: bool 
 
     Risk set ``gap_lag > 0`` (a gap is open at ``t-1``); ``D`` = "the spell survives block ``t``" on
     :data:`arblib.estimation.CLOSURE_DURATION_TERMS` (adds spell age and the open-gap size) with the
-    same fixed effects / clustering as :func:`onset_table`. Same cell and trailing-column format."""
+    same fixed effects / clustering as :func:`onset_table`. Same cell and trailing-column format.
+
+    The leading ``survival rate (%)`` column is the persistence analogue of the onset table's
+    existence rate: ``100 x #{D == 1} / N`` over that cell's own estimation sample - after the EPV
+    floor and restricted to ``gap_lag > 0`` - i.e. the share of at-risk blocks on which the open gap
+    survives. The closure rate is its complement, ``100 - survival rate``; survival is the one
+    reported because the dependent variable is survival, so the descriptive rate and the coefficient
+    signs point the same way."""
     return _hazard_table(panels, settings, "closure", _CLOSURE_ORDER, est.CLOSURE_DURATION_TERMS,
                          quantiles, verbose)
 
